@@ -1,0 +1,110 @@
+replicaCount: 1
+
+image:
+  repository: x-pass
+  pullPolicy: IfNotPresent
+  # Overrides the image tag whose default is the chart appVersion.
+  tag: ""
+
+imagePullSecrets: []
+nameOverride: ""
+fullnameOverride: ""
+
+serviceAccount:
+  create: true
+  annotations: {}
+  # The name of the service account to use.
+  # If not set and create is true, a name is generated using the fullname template.
+  # Must match the Vault K8s auth role binding.
+  name: ""
+
+podAnnotations: {}
+
+podSecurityContext:
+  runAsNonRoot: true
+  runAsUser: 65534
+  fsGroup: 65534
+
+securityContext:
+  allowPrivilegeEscalation: false
+  readOnlyRootFilesystem: true
+  capabilities:
+    drop:
+      - ALL
+
+service:
+  type: ClusterIP
+  port: 8080
+
+ingress:
+  enabled: false
+  className: ""
+  annotations: {}
+  hosts:
+    - host: x-pass.example.local
+      paths:
+        - path: /
+          pathType: Prefix
+  tls: []
+
+# -- Keycloak UMA 2.0 connection settings
+keycloak:
+  # -- Realm issuer URL (e.g. https://keycloak.example.com/realms/myrealm)
+  issuerURL: ""
+  # -- Expected JWT audience (optional)
+  audience: ""
+  # -- Broker's Keycloak client ID
+  clientID: ""
+  # -- Keycloak realm name
+  realm: ""
+
+# -- Vault connection settings
+vault:
+  # -- Vault server address (e.g. https://vault.example.com)
+  addr: ""
+  # -- Vault K8s auth mount path
+  k8sAuthPath: "auth/kubernetes"
+  # -- Vault K8s auth role
+  k8sRole: ""
+  # -- Path to service account token (usually auto-mounted)
+  k8sJWTPath: "/var/run/secrets/kubernetes.io/serviceaccount/token"
+
+# -- Name of an existing Secret containing sensitive env vars.
+# Must contain keys: KEYCLOAK_CLIENT_SECRET, WRAPTOKEN_ENC_KEY
+existingSecret: ""
+
+# -- Service registry YAML mounted into the pod.
+# Defines which services the broker can mediate and their Vault/Keycloak mappings.
+# See config.example.yaml for the full schema.
+serviceRegistry:
+  # payroll-db:
+  #   vault:
+  #     kv2_mount: "secret"
+  #     kv2_path: "prod/payroll/db"
+  #   authz:
+  #     keycloak:
+  #       resource_id: "vault:payroll-db"
+  #       scope: "read"
+  #   wrap:
+  #     max_ttl: "10m"
+  #     default_ttl: "5m"
+
+resources: {}
+  # limits:
+  #   cpu: 100m
+  #   memory: 128Mi
+  # requests:
+  #   cpu: 50m
+  #   memory: 64Mi
+
+autoscaling:
+  enabled: false
+  minReplicas: 1
+  maxReplicas: 10
+  targetCPUUtilizationPercentage: 80
+
+nodeSelector: {}
+
+tolerations: []
+
+affinity: {}
