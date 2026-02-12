@@ -109,12 +109,5 @@ export function createHealthRouter(config: Config, vaultClient: VaultClient): Ro
     }
   });
 
-  // OIDC callback — used as redirect target during headless login
-  // This route exists so that the redirect URI resolves to something.
-  // The actual code capture is done by Playwright watching the URL.
-  router.get('/oidc/callback', (_req: Request, res: Response) => {
-    res.send('OK');
-  });
-
   return router;
 }

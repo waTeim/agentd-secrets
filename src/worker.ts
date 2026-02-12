@@ -1,31 +1,25 @@
 import { Config, capTTL, ttlToVaultString, validateServiceExists } from './config';
 import { encrypt } from './encryption';
 import { RequestStore, BrokerRequest } from './requestStore';
-import {
-  fetchOIDCDiscovery,
-  generatePKCE,
-  buildAuthURL,
-  exchangeCode,
-} from './oidcDriver';
-import { IPlaywrightDriver } from './playwrightDriver';
+import { VaultOidcManager } from './auth/vaultOidcCliFlow';
 import { VaultClient } from './vaultClient';
 import logger from './logger';
 
 export class Worker {
   private config: Config;
   private store: RequestStore;
-  private driver: IPlaywrightDriver;
+  private oidcManager: VaultOidcManager;
   private vaultClient: VaultClient;
 
   constructor(
     config: Config,
     store: RequestStore,
-    driver: IPlaywrightDriver,
+    oidcManager: VaultOidcManager,
     vaultClient: VaultClient,
   ) {
     this.config = config;
     this.store = store;
-    this.driver = driver;
+    this.oidcManager = oidcManager;
     this.vaultClient = vaultClient;
   }
 
@@ -40,27 +34,11 @@ export class Worker {
         return;
       }
 
-      // Step 1: Headless OIDC login via Playwright
-      logger.info('Starting headless OIDC login', { request_id: id, service });
+      // Step 1: Ensure we have a valid Vault token (via OIDC CLI-style flow)
+      logger.info('Ensuring Vault token via OIDC login', { request_id: id, service });
 
-      const discovery = await fetchOIDCDiscovery(this.config.keycloak.issuerURL);
-      const pkce = generatePKCE();
-      const authURL = buildAuthURL(
-        discovery,
-        this.config.keycloak.clientID,
-        this.config.approver.redirectURI,
-        pkce,
-      );
-
-      let loginResult;
       try {
-        loginResult = await this.driver.login(
-          authURL,
-          this.config.approver.redirectURI,
-          this.config.approver.username,
-          this.config.approver.password,
-          pkce.state,
-        );
+        await this.oidcManager.ensureToken();
       } catch (err) {
         const msg = (err as Error).message;
         if (msg === 'DUO_DENIED' || msg.toLowerCase().includes('denied')) {
@@ -74,18 +52,7 @@ export class Worker {
         throw err;
       }
 
-      // Step 1b: Exchange authorization code for tokens
-      logger.info('Exchanging authorization code', { request_id: id });
-      const tokens = await exchangeCode(
-        discovery,
-        loginResult.code,
-        this.config.keycloak.clientID,
-        this.config.keycloak.clientSecret,
-        this.config.approver.redirectURI,
-        pkce.codeVerifier,
-      );
-
-      logger.info('OIDC token obtained, approval complete', { request_id: id });
+      logger.info('Vault token available, proceeding to read secret', { request_id: id });
 
       // Step 2: Read from Vault with response wrapping
       const effectiveTTLMs = capTTL(wrap_ttl, serviceEntry);

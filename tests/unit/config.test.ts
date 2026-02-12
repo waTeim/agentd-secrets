@@ -14,15 +14,18 @@ describe('Config', () => {
       KEYCLOAK_CLIENT_SECRET: 'test-secret',
       KEYCLOAK_AUDIENCE: 'x-pass',
       VAULT_ADDR: 'https://vault.example.com',
-      VAULT_K8S_AUTH_PATH: 'auth/kubernetes',
-      VAULT_K8S_ROLE: 'x-pass',
-      VAULT_K8S_JWT_PATH: '/var/run/secrets/kubernetes.io/serviceaccount/token',
+      VAULT_OIDC_MOUNT: 'oidc',
+      VAULT_OIDC_ROLE: 'wyrd-x-pass',
+      VAULT_KV_MOUNT: 'secret',
+      VAULT_WRAP_TTL: '300s',
       WRAPTOKEN_ENC_KEY: 'a'.repeat(64),
       BROKER_LISTEN_ADDR: ':8080',
       BROKER_CONFIG_PATH: fixtureConfig,
-      KC_APPROVER_USERNAME: 'approver',
-      KC_APPROVER_PASSWORD: 'password123',
-      KC_OIDC_REDIRECT_URI: 'http://localhost:8080/oidc/callback',
+      KEYCLOAK_USERNAME: 'approver',
+      KEYCLOAK_PASSWORD: 'password123',
+      OIDC_LOCAL_LISTEN_HOST: '127.0.0.1',
+      OIDC_LOCAL_LISTEN_PORT: '8250',
+      OIDC_LOCAL_REDIRECT_URI: 'http://localhost:8250/oidc/callback',
     };
   });
 
@@ -36,8 +39,15 @@ describe('Config', () => {
     expect(config.keycloak.issuerURL).toBe('https://keycloak.example.com/realms/myrealm');
     expect(config.keycloak.clientID).toBe('x-pass');
     expect(config.vault.addr).toBe('https://vault.example.com');
+    expect(config.vault.oidcMount).toBe('oidc');
+    expect(config.vault.oidcRole).toBe('wyrd-x-pass');
+    expect(config.vault.kvMount).toBe('secret');
+    expect(config.vault.wrapTTL).toBe('300s');
+    expect(config.oidcCallback.listenHost).toBe('127.0.0.1');
+    expect(config.oidcCallback.listenPort).toBe(8250);
+    expect(config.oidcCallback.redirectURI).toBe('http://localhost:8250/oidc/callback');
     expect(config.listenPort).toBe(8080);
-    expect(config.approver.username).toBe('approver');
+    expect(config.login.username).toBe('approver');
     expect(config.serviceRegistry.services['payroll-db']).toBeDefined();
     expect(config.serviceRegistry.services['test-service']).toBeDefined();
   });
@@ -105,11 +115,10 @@ describe('validateServiceExists', () => {
       KEYCLOAK_CLIENT_ID: 'x-pass',
       KEYCLOAK_CLIENT_SECRET: 'secret',
       VAULT_ADDR: 'https://vault.example.com',
-      VAULT_K8S_ROLE: 'x-pass',
       WRAPTOKEN_ENC_KEY: 'a'.repeat(64),
       BROKER_CONFIG_PATH: fixtureConfig,
-      KC_APPROVER_USERNAME: 'approver',
-      KC_APPROVER_PASSWORD: 'pw',
+      KEYCLOAK_USERNAME: 'approver',
+      KEYCLOAK_PASSWORD: 'pw',
     };
   });
 

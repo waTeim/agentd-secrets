@@ -1,4 +1,3 @@
-import fs from 'fs';
 import logger from './logger';
 
 interface VaultToken {
@@ -16,22 +15,30 @@ interface VaultWrapInfo {
 
 export class VaultClient {
   private addr: string;
-  private k8sAuthPath: string;
-  private k8sRole: string;
-  private k8sJWTPath: string;
   private cachedToken: VaultToken | null = null;
 
-  constructor(addr: string, k8sAuthPath: string, k8sRole: string, k8sJWTPath: string) {
+  constructor(addr: string) {
     this.addr = addr.replace(/\/$/, '');
-    this.k8sAuthPath = k8sAuthPath;
-    this.k8sRole = k8sRole;
-    this.k8sJWTPath = k8sJWTPath;
+  }
+
+  /**
+   * Supply a Vault token obtained externally (e.g. via the OIDC CLI flow).
+   * The token is cached with its lease metadata for automatic expiry checks.
+   */
+  setToken(clientToken: string, leaseDuration: number, renewable: boolean): void {
+    this.cachedToken = {
+      clientToken,
+      leaseDuration,
+      renewable,
+      obtainedAt: Date.now(),
+    };
+    logger.info('Vault token set via external auth');
   }
 
   private async getToken(): Promise<string> {
     if (this.cachedToken) {
       const elapsed = (Date.now() - this.cachedToken.obtainedAt) / 1000;
-      // Renew if within 80% of lease duration
+      // Reuse if within 80% of lease duration
       if (elapsed < this.cachedToken.leaseDuration * 0.8) {
         return this.cachedToken.clientToken;
       }
@@ -40,41 +47,20 @@ export class VaultClient {
         try {
           return await this.renewToken(this.cachedToken.clientToken);
         } catch {
-          logger.warn('Vault token renewal failed, re-authenticating');
+          logger.warn('Vault token renewal failed, token expired');
         }
       }
     }
-    return this.authenticate();
+    throw new Error(
+      'No valid Vault token available. ' +
+      'The OIDC login flow must provide a token via setToken() before Vault operations.',
+    );
   }
 
-  private async authenticate(): Promise<string> {
-    const jwt = fs.readFileSync(this.k8sJWTPath, 'utf-8').trim();
-    const url = `${this.addr}/v1/${this.k8sAuthPath}/login`;
-
-    const resp = await fetch(url, {
-      method: 'POST',
-      headers: { 'Content-Type': 'application/json' },
-      body: JSON.stringify({ role: this.k8sRole, jwt }),
-    });
-
-    if (!resp.ok) {
-      const text = await resp.text();
-      throw new Error(`Vault K8s auth failed: ${resp.status} ${text}`);
-    }
-
-    const data = await resp.json() as {
-      auth: { client_token: string; lease_duration: number; renewable: boolean };
-    };
-
-    this.cachedToken = {
-      clientToken: data.auth.client_token,
-      leaseDuration: data.auth.lease_duration,
-      renewable: data.auth.renewable,
-      obtainedAt: Date.now(),
-    };
-
-    logger.info('Vault authentication successful');
-    return this.cachedToken.clientToken;
+  isTokenValid(): boolean {
+    if (!this.cachedToken) return false;
+    const elapsed = (Date.now() - this.cachedToken.obtainedAt) / 1000;
+    return elapsed < this.cachedToken.leaseDuration * 0.8;
   }
 
   private async renewToken(token: string): Promise<string> {

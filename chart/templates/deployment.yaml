@@ -57,38 +57,45 @@ spec:
                 secretKeyRef:
                   name: {{ .Values.existingSecret | default (printf "%s-secrets" (include "x-pass.fullname" .)) }}
                   key: KEYCLOAK_CLIENT_SECRET
-            # -- Vault
+            # -- Vault (OIDC auth — Vault CLI-style localhost flow)
             - name: VAULT_ADDR
               value: {{ .Values.vault.addr | quote }}
-            - name: VAULT_K8S_AUTH_PATH
-              value: {{ .Values.vault.k8sAuthPath | quote }}
-            - name: VAULT_K8S_ROLE
-              value: {{ .Values.vault.k8sRole | quote }}
-            - name: VAULT_K8S_JWT_PATH
-              value: {{ .Values.vault.k8sJWTPath | quote }}
+            - name: VAULT_OIDC_MOUNT
+              value: {{ .Values.vault.oidcMount | quote }}
+            - name: VAULT_OIDC_ROLE
+              value: {{ .Values.vault.oidcRole | quote }}
+            - name: VAULT_KV_MOUNT
+              value: {{ .Values.vault.kvMount | quote }}
+            - name: VAULT_WRAP_TTL
+              value: {{ .Values.vault.wrapTTL | quote }}
+            # -- OIDC localhost callback listener
+            - name: OIDC_LOCAL_LISTEN_HOST
+              value: {{ .Values.oidcCallback.listenHost | quote }}
+            - name: OIDC_LOCAL_LISTEN_PORT
+              value: {{ .Values.oidcCallback.listenPort | quote }}
+            - name: OIDC_LOCAL_REDIRECT_URI
+              value: {{ .Values.oidcCallback.redirectURI | quote }}
             # -- Encryption
             - name: WRAPTOKEN_ENC_KEY
               valueFrom:
                 secretKeyRef:
                   name: {{ .Values.existingSecret | default (printf "%s-secrets" (include "x-pass.fullname" .)) }}
                   key: WRAPTOKEN_ENC_KEY
-            # -- Headless approver login
-            - name: KC_APPROVER_USERNAME
+            # -- Headless OIDC login credentials
+            - name: KEYCLOAK_USERNAME
               valueFrom:
                 secretKeyRef:
                   name: {{ .Values.existingSecret | default (printf "%s-secrets" (include "x-pass.fullname" .)) }}
-                  key: KC_APPROVER_USERNAME
-            - name: KC_APPROVER_PASSWORD
+                  key: KEYCLOAK_USERNAME
+            - name: KEYCLOAK_PASSWORD
               valueFrom:
                 secretKeyRef:
                   name: {{ .Values.existingSecret | default (printf "%s-secrets" (include "x-pass.fullname" .)) }}
-                  key: KC_APPROVER_PASSWORD
-            - name: KC_OIDC_REDIRECT_URI
-              value: {{ .Values.approver.redirectURI | quote }}
+                  key: KEYCLOAK_PASSWORD
             - name: KC_LOGIN_TIMEOUT
-              value: {{ .Values.approver.loginTimeout | quote }}
+              value: {{ .Values.login.loginTimeout | quote }}
             - name: KC_DUO_TIMEOUT
-              value: {{ .Values.approver.duoTimeout | quote }}
+              value: {{ .Values.login.duoTimeout | quote }}
             - name: PLAYWRIGHT_HEADLESS
               value: {{ .Values.playwright.headless | quote }}
             - name: PLAYWRIGHT_BROWSER

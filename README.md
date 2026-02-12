@@ -4,19 +4,46 @@ A Node.js/TypeScript service that brokers access to HashiCorp Vault secrets with
 
 ## How It Works
 
-1. **Bot requests a secret** — An automated client (bot) sends `POST /v1/requests` with a service name, reason, and its identity. The bot authenticates with a Keycloak-issued JWT (Bearer token).
+```
+Bot (CI/CD)                  x-pass Broker                   Vault                 Keycloak + Duo
+    |                             |                            |                         |
+    |-- POST /v1/requests ------->|                            |                         |
+    |<-- 202 {request_id} --------|                            |                         |
+    |                             |-- POST auth/oidc/auth_url ->|                         |
+    |                             |<-- {auth_url} --------------|                         |
+    |                             |-- Start localhost:8250 --->||                         |
+    |                             |-- Playwright opens auth_url ----------------------->  |
+    |                             |                            |   Login + Duo push  ---> |
+    |                             |                            |   <--- Duo approved       |
+    |                             |<-- GET localhost:8250/oidc/callback?code=...&state=... |
+    |                             |-- GET auth/oidc/callback -->|                         |
+    |                             |<-- {client_token} ---------|                         |
+    |                             |-- GET kv/data/... -------->|                         |
+    |                             |   (X-Vault-Wrap-TTL)       |                         |
+    |                             |<-- {wrap_token} -----------|                         |
+    |-- GET /v1/requests/{id} --->|                            |                         |
+    |<-- {status:APPROVED, wrap_token} --|                     |                         |
+```
 
-2. **Broker initiates headless login** — The broker launches a headless Chromium browser (Playwright), navigates to the Keycloak OIDC authorization endpoint for a dedicated "approver" user, fills in credentials, and submits.
+1. **Bot requests a secret** -- An automated client sends `POST /v1/requests` with a service name, reason, and identity. The bot authenticates with a Keycloak-issued JWT (Bearer token).
 
-3. **Duo MFA push** — Keycloak's Browser authentication flow triggers a Duo push notification to the approver's phone. The human taps "Approve" in Duo Mobile. No codes, no browser windows — just a push notification.
+2. **Vault OIDC auth URL** -- The broker requests an OIDC auth URL from Vault's OIDC auth method (`POST /v1/auth/{mount}/oidc/auth_url`), providing a `redirect_uri` of `http://localhost:8250/oidc/callback`.
 
-4. **Token exchange** — After Duo approval, Keycloak redirects with an authorization code. The broker exchanges it for an access token (Authorization Code + PKCE S256).
+3. **Local callback listener** -- The broker starts an ephemeral HTTP server on `127.0.0.1:8250` inside the pod to capture the OIDC callback redirect. This emulates `vault login -method=oidc`.
 
-5. **Vault read with response wrapping** — The broker authenticates to Vault via Kubernetes service account auth, reads the requested KV v2 secret with `X-Vault-Wrap-TTL`, and receives a single-use wrapping token.
+4. **Headless browser login** -- Playwright opens the Vault-provided auth URL in a headless Chromium browser, fills in the Keycloak login form with the dedicated approver credentials, and submits.
 
-6. **Encrypted storage and delivery** — The wrapping token is encrypted at rest (AES-256-GCM) and stored in memory. The bot polls `GET /v1/requests/{id}` and receives the wrap token once approved.
+5. **Duo MFA push** -- Keycloak triggers a Duo push notification to the approver's phone. The human taps "Approve" in Duo Mobile.
 
-The broker **never** sees or returns plaintext secrets — only Vault wrapping tokens.
+6. **Callback capture** -- After Duo approval, Keycloak redirects the browser to `http://localhost:8250/oidc/callback?code=...&state=...`. The local listener captures the parameters.
+
+7. **Vault token exchange** -- The broker completes the OIDC callback exchange with Vault (`GET /v1/auth/{mount}/oidc/callback?state=...&code=...&client_nonce=...`). Vault returns a `client_token`.
+
+8. **Vault read with response wrapping** -- Using the Vault token, the broker reads the requested KV v2 secret with `X-Vault-Wrap-TTL` and receives a single-use wrapping token.
+
+9. **Encrypted delivery** -- The wrapping token is encrypted at rest (AES-256-GCM) and stored in memory. The bot polls `GET /v1/requests/{id}` and receives the wrap token once approved.
+
+The broker **never** sees or returns plaintext secrets -- only Vault wrapping tokens.
 
 ## API
 
@@ -79,21 +106,24 @@ Readiness probe. Returns `200` if Keycloak OIDC discovery and Vault `sys/health`
 
 | Variable | Required | Default | Description |
 |---|---|---|---|
-| `KEYCLOAK_ISSUER_URL` | Yes | — | Keycloak realm issuer URL |
+| `KEYCLOAK_ISSUER_URL` | Yes | -- | Keycloak realm issuer URL |
 | `KEYCLOAK_REALM` | No | `""` | Keycloak realm name |
-| `KEYCLOAK_CLIENT_ID` | Yes | — | Broker's Keycloak client ID |
-| `KEYCLOAK_CLIENT_SECRET` | Yes | — | Broker's Keycloak client secret |
+| `KEYCLOAK_CLIENT_ID` | Yes | -- | Broker's Keycloak client ID |
+| `KEYCLOAK_CLIENT_SECRET` | Yes | -- | Broker's Keycloak client secret |
 | `KEYCLOAK_AUDIENCE` | No | `""` | Expected JWT audience claim |
-| `VAULT_ADDR` | Yes | — | Vault server address |
-| `VAULT_K8S_AUTH_PATH` | No | `auth/kubernetes` | Vault Kubernetes auth mount path |
-| `VAULT_K8S_ROLE` | Yes | — | Vault Kubernetes auth role |
-| `VAULT_K8S_JWT_PATH` | No | `/var/run/secrets/kubernetes.io/serviceaccount/token` | Path to SA token |
-| `WRAPTOKEN_ENC_KEY` | Yes | — | 64 hex chars (32 bytes) for AES-256-GCM encryption |
+| `VAULT_ADDR` | Yes | -- | Vault server address |
+| `VAULT_OIDC_MOUNT` | No | `oidc` | Vault OIDC auth method mount path |
+| `VAULT_OIDC_ROLE` | No | `wyrd-x-pass` | Vault OIDC auth role |
+| `VAULT_KV_MOUNT` | No | `secret` | Vault KV v2 secrets engine mount |
+| `VAULT_WRAP_TTL` | No | `300s` | Default Vault response wrap TTL |
+| `OIDC_LOCAL_LISTEN_HOST` | No | `127.0.0.1` | Callback listener bind address |
+| `OIDC_LOCAL_LISTEN_PORT` | No | `8250` | Callback listener port |
+| `OIDC_LOCAL_REDIRECT_URI` | No | `http://localhost:8250/oidc/callback` | OIDC redirect URI |
+| `WRAPTOKEN_ENC_KEY` | Yes | -- | 64 hex chars (32 bytes) for AES-256-GCM encryption |
 | `BROKER_LISTEN_ADDR` | No | `:8080` | Listen address |
 | `BROKER_CONFIG_PATH` | No | `/etc/x-pass/config.yaml` | Path to service registry |
-| `KC_APPROVER_USERNAME` | Yes | — | Keycloak user for headless login |
-| `KC_APPROVER_PASSWORD` | Yes | — | Password for the approver user |
-| `KC_OIDC_REDIRECT_URI` | No | `http://localhost:8080/oidc/callback` | OIDC redirect URI |
+| `KEYCLOAK_USERNAME` | Yes | -- | Keycloak user for headless login |
+| `KEYCLOAK_PASSWORD` | Yes | -- | Password for the approver user |
 | `KC_LOGIN_TIMEOUT` | No | `2m` | Timeout for Keycloak login page |
 | `KC_DUO_TIMEOUT` | No | `5m` | Timeout waiting for Duo push approval |
 | `PLAYWRIGHT_HEADLESS` | No | `true` | Run Chromium headless |
@@ -121,27 +151,84 @@ services:
 
 The `authz` block is retained for backward compatibility but is not used for gating in this version; approval is via Duo push.
 
+## Prerequisites
+
+### Vault OIDC Auth Method
+
+The Vault OIDC auth method must be enabled and configured with Keycloak as the identity provider. The Vault role must include `http://localhost:8250/oidc/callback` in its `allowed_redirect_uris`:
+
+```bash
+vault write auth/oidc/role/wyrd-x-pass \
+  bound_audiences="x-pass" \
+  allowed_redirect_uris="http://localhost:8250/oidc/callback" \
+  user_claim="preferred_username" \
+  role_type="oidc" \
+  policies="x-pass-read" \
+  token_ttl="15m"
+```
+
+### Keycloak Client
+
+The Keycloak OIDC client (`wyrd-x-pass` or whatever `KEYCLOAK_CLIENT_ID` is set to) must have `http://localhost:8250/oidc/callback` as a valid redirect URI. Since the callback is on localhost inside the pod, no public ingress is needed.
+
+### Vault KV Policy
+
+The Vault policy attached to the OIDC role must grant read access to the KV v2 paths referenced in the service registry:
+
+```hcl
+path "secret/data/prod/payroll/*" {
+  capabilities = ["read"]
+}
+```
+
 ## Security Notes
 
-- **No plaintext secrets** — The broker never returns Vault secret data. Only single-use Vault wrapping tokens are returned.
-- **Wrap tokens encrypted at rest** — AES-256-GCM with a random 12-byte nonce prepended to ciphertext. Key provided via `WRAPTOKEN_ENC_KEY`.
-- **Bot JWT validation** — All API requests require a valid JWT signed by the Keycloak realm, validated against JWKS with issuer and audience checks.
-- **Rate limiting** — `POST /v1/requests` is rate-limited (30 req/min per IP).
-- **Request IDs** — UUIDv4, cryptographically random and unguessable.
-- **Wrap TTL capping** — Requested TTLs are capped to the service's `max_ttl`.
-- **Request expiry** — Pending requests expire after 15 minutes. Old requests are cleaned up after 1 hour.
-- **No sensitive data in logs** — Passwords, tokens, and secrets are never logged.
-- **Headless browser isolation** — Each request gets a fresh browser context, closed after use.
+- **No plaintext secrets** -- The broker never returns Vault secret data. Only single-use Vault wrapping tokens are returned.
+- **Localhost callback** -- The OIDC callback listener runs on `127.0.0.1` inside the pod. No public callback endpoint is exposed.
+- **Token caching with mutex** -- Concurrent requests share a single Vault token (Option A: serialized logins). Only one OIDC login happens at a time; subsequent requests reuse the cached token until it expires.
+- **Wrap tokens encrypted at rest** -- AES-256-GCM with a random 12-byte nonce prepended to ciphertext. Key provided via `WRAPTOKEN_ENC_KEY`.
+- **Bot JWT validation** -- All API requests require a valid JWT signed by the Keycloak realm, validated against JWKS with issuer and audience checks.
+- **Rate limiting** -- `POST /v1/requests` is rate-limited (30 req/min per IP).
+- **Request IDs** -- UUIDv4, cryptographically random and unguessable.
+- **Wrap TTL capping** -- Requested TTLs are capped to the service's `max_ttl`.
+- **Request expiry** -- Pending requests expire after 15 minutes. Old requests are cleaned up after 1 hour.
+- **No sensitive data in logs** -- Passwords, tokens, and secrets are never logged.
+- **Headless browser isolation** -- Each login gets a fresh browser context, closed after use.
 
 ### Risk: Storing Approver Credentials
 
-The broker stores a real Keycloak user's password (`KC_APPROVER_PASSWORD`) in a Kubernetes Secret. Recommendations:
+The broker stores a real Keycloak user's password (`KEYCLOAK_PASSWORD`) in a Kubernetes Secret. Recommendations:
 
 - Use a **dedicated service account user** with minimal permissions (only the ability to authenticate and trigger Duo).
 - Set **short Keycloak session timeouts** for this user.
 - Restrict the Kubernetes Secret with RBAC so only the broker pod can read it.
 - Rotate the password regularly.
 - Consider using Vault itself to store the password and bootstrapping via a different auth method.
+
+## Admin CLI
+
+The `bin/xpass-admin.py` script provides a unified CLI for setup and deployment:
+
+```bash
+# Discover Vault config and write xpass-admin.yaml
+bin/xpass-admin.py init --vault-addr https://vault.example.com --vault-token hvs.xxx
+
+# Configure build settings (registry, image, tag)
+bin/xpass-admin.py configure
+
+# Create Kubernetes secret
+bin/xpass-admin.py create-secret \
+  --keycloak-client-secret '...' \
+  --keycloak-password '...' \
+  --generate-enc-key
+
+# Configure Vault OIDC auth
+bin/xpass-admin.py vault-setup \
+  --vault-token hvs.xxx \
+  --keycloak-client-secret '...'
+```
+
+See `bin/xpass-admin.py --help` for full usage.
 
 ## Development
 
@@ -191,26 +278,50 @@ docker build -t x-pass:latest .
 ## Deployment (Helm)
 
 ```bash
-# Create the secret first
-kubectl create secret generic x-pass-secrets \
-  --from-literal=KEYCLOAK_CLIENT_SECRET='...' \
-  --from-literal=WRAPTOKEN_ENC_KEY="$(openssl rand -hex 32)" \
-  --from-literal=KC_APPROVER_USERNAME='approver' \
-  --from-literal=KC_APPROVER_PASSWORD='...'
+# Create the secret first (or use xpass-admin.py create-secret)
+bin/xpass-admin.py create-secret \
+  --keycloak-client-secret '...' \
+  --keycloak-password '...' \
+  --generate-enc-key
 
 # Install
-helm install x-pass ./helm \
+helm install x-pass ./chart \
   --set keycloak.issuerURL=https://keycloak.example.com/realms/myrealm \
   --set keycloak.clientID=x-pass \
-  --set keycloak.realm=myrealm \
   --set vault.addr=https://vault.example.com \
-  --set vault.k8sRole=x-pass \
+  --set vault.oidcRole=wyrd-x-pass \
   --set existingSecret=x-pass-secrets
 ```
 
+## Troubleshooting
+
+### "Callback never hit" / OIDC callback timeout
+
+- **Keycloak redirect URI**: Ensure the Keycloak client has `http://localhost:8250/oidc/callback` in its valid redirect URIs.
+- **Vault role redirect URI**: Ensure the Vault OIDC role has the same URI in `allowed_redirect_uris`.
+- **Port conflict**: Verify nothing else in the pod is listening on port 8250.
+
+### "Permission denied" / 403 from Vault
+
+- The Vault OIDC role's policies must grant read access to the requested KV v2 paths.
+- Verify the Vault token has the expected policies: `vault token lookup`.
+
+### "Duo prompt loops" or never completes
+
+- The approver user must be enrolled in Duo with a valid device.
+- Check Duo admin console for failed push attempts.
+- Increase `KC_DUO_TIMEOUT` if the user is slow to respond.
+
+### "Invalid token" / 403 on Vault KV read
+
+- The cached Vault token may have expired. The broker automatically re-authenticates when the token expires (at 80% of lease duration).
+- Check Vault audit logs for token validation errors.
+- Ensure the Vault OIDC role's `token_ttl` is long enough for the operations.
+
 ## Operational Notes
 
-- **Single replica assumption** — The in-memory request store means only one replica should run. If scaling beyond one replica, use sticky sessions (e.g., Ingress session affinity) so the bot's GET poll hits the same pod that processed its POST.
-- **Duo timeout** — The `KC_DUO_TIMEOUT` (default 5m) determines how long the broker waits for the human to approve the Duo push. Adjust based on your organization's response time expectations.
-- **Browser resource usage** — Each pending request spawns a headless Chromium instance. Monitor memory usage and set appropriate resource limits in the Helm values.
-- **Request cleanup** — Expired and completed requests are automatically cleaned up after 1 hour.
+- **Single replica assumption** -- The in-memory request store means only one replica should run. If scaling beyond one replica, use sticky sessions (e.g., Ingress session affinity) so the bot's GET poll hits the same pod that processed its POST.
+- **Duo timeout** -- The `KC_DUO_TIMEOUT` (default 5m) determines how long the broker waits for the human to approve the Duo push. Adjust based on your organization's response time expectations.
+- **Browser resource usage** -- Each pending login spawns a headless Chromium instance. Monitor memory usage and set appropriate resource limits in the Helm values.
+- **Request cleanup** -- Expired and completed requests are automatically cleaned up after 1 hour.
+- **Token reuse** -- The broker caches the Vault token and reuses it for multiple requests. A login mutex ensures only one OIDC flow runs at a time, even under concurrent requests.

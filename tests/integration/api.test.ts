@@ -6,22 +6,15 @@ import path from 'path';
 import { RequestStore } from '../../src/requestStore';
 import { Worker } from '../../src/worker';
 import { VaultClient } from '../../src/vaultClient';
-import { IPlaywrightDriver, PlaywrightLoginResult } from '../../src/playwrightDriver';
+import { VaultOidcManager } from '../../src/auth/vaultOidcCliFlow';
 import { createApiRouter, createHealthRouter } from '../../src/routes';
-import { Config, ServiceEntry, loadConfig } from '../../src/config';
+import { Config, loadConfig } from '../../src/config';
 
-// Mock Playwright driver that always succeeds
-class MockDriver implements IPlaywrightDriver {
-  async login(
-    _authURL: string,
-    _redirectURI: string,
-    _username: string,
-    _password: string,
-    expectedState: string,
-  ): Promise<PlaywrightLoginResult> {
-    return { code: 'mock-code', state: expectedState };
+// Stub VaultOidcManager that skips the real OIDC flow
+class MockVaultOidcManager {
+  async ensureToken(): Promise<void> {
+    // Token is pre-set on the VaultClient; nothing to do
   }
-  async close() {}
 }
 
 describe('API Integration Tests', () => {
@@ -96,15 +89,6 @@ describe('API Integration Tests', () => {
     vaultApp.get('/v1/sys/health', (_req, res) => {
       res.json({ initialized: true, sealed: false });
     });
-    vaultApp.post('/v1/auth/kubernetes/login', (_req, res) => {
-      res.json({
-        auth: {
-          client_token: 'mock-vault-token',
-          lease_duration: 3600,
-          renewable: true,
-        },
-      });
-    });
     vaultApp.get('/v1/secret/data/*', (req, res) => {
       res.json({
         wrap_info: {
@@ -127,14 +111,15 @@ describe('API Integration Tests', () => {
     process.env.KEYCLOAK_CLIENT_SECRET = 'test-secret';
     process.env.KEYCLOAK_AUDIENCE = audience;
     process.env.VAULT_ADDR = `http://127.0.0.1:${vaultPort}`;
-    process.env.VAULT_K8S_AUTH_PATH = 'auth/kubernetes';
-    process.env.VAULT_K8S_ROLE = 'x-pass';
-    process.env.VAULT_K8S_JWT_PATH = path.join(__dirname, '..', 'fixtures', 'config.yaml'); // just a file that exists
+    process.env.VAULT_OIDC_MOUNT = 'oidc';
+    process.env.VAULT_OIDC_ROLE = 'wyrd-x-pass';
+    process.env.VAULT_KV_MOUNT = 'secret';
+    process.env.VAULT_WRAP_TTL = '300s';
     process.env.WRAPTOKEN_ENC_KEY = encKeyHex;
     process.env.BROKER_CONFIG_PATH = fixtureConfig;
-    process.env.KC_APPROVER_USERNAME = 'approver';
-    process.env.KC_APPROVER_PASSWORD = 'password';
-    process.env.KC_OIDC_REDIRECT_URI = 'http://localhost:8080/oidc/callback';
+    process.env.KEYCLOAK_USERNAME = 'approver';
+    process.env.KEYCLOAK_PASSWORD = 'password';
+    process.env.OIDC_LOCAL_REDIRECT_URI = 'http://localhost:8250/oidc/callback';
 
     // Initialize JWT middleware
     const { initJwtMiddleware } = require('../../src/jwtMiddleware');
@@ -143,14 +128,11 @@ describe('API Integration Tests', () => {
     // Load config
     const config: Config = loadConfig();
     store = new RequestStore(config.wrapTokenEncKey);
-    const mockDriver = new MockDriver();
-    const vaultClient = new VaultClient(
-      config.vault.addr,
-      config.vault.k8sAuthPath,
-      config.vault.k8sRole,
-      config.vault.k8sJWTPath,
-    );
-    const worker = new Worker(config, store, mockDriver, vaultClient);
+    const vaultClient = new VaultClient(config.vault.addr);
+    // Pre-set a mock token so readWrapped works
+    vaultClient.setToken('mock-vault-token', 3600, true);
+    const mockOidcManager = new MockVaultOidcManager() as unknown as VaultOidcManager;
+    const worker = new Worker(config, store, mockOidcManager, vaultClient);
 
     // Create app
     const app = express();

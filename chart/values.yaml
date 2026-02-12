@@ -15,7 +15,6 @@ serviceAccount:
   annotations: {}
   # The name of the service account to use.
   # If not set and create is true, a name is generated using the fullname template.
-  # Must match the Vault K8s auth role binding.
   name: ""
 
 podAnnotations: {}
@@ -47,7 +46,7 @@ ingress:
           pathType: Prefix
   tls: []
 
-# -- Keycloak UMA 2.0 connection settings
+# -- Keycloak OIDC connection settings
 keycloak:
   # -- Realm issuer URL (e.g. https://keycloak.example.com/realms/myrealm)
   issuerURL: ""
@@ -58,25 +57,38 @@ keycloak:
   # -- Keycloak realm name
   realm: ""
 
-# -- Vault connection settings
+# -- Vault connection settings (OIDC auth — Vault CLI-style localhost flow)
 vault:
   # -- Vault server address (e.g. https://vault.example.com)
   addr: ""
-  # -- Vault K8s auth mount path
-  k8sAuthPath: "auth/kubernetes"
-  # -- Vault K8s auth role
-  k8sRole: ""
-  # -- Path to service account token (usually auto-mounted)
-  k8sJWTPath: "/var/run/secrets/kubernetes.io/serviceaccount/token"
+  # -- Vault OIDC auth mount path
+  oidcMount: "oidc"
+  # -- Vault OIDC auth role name
+  oidcRole: "wyrd-x-pass"
+  # -- KV v2 mount path used by the broker to read secrets
+  kvMount: "secret"
+  # -- Default wrap TTL for response-wrapped secret reads
+  wrapTTL: "300s"
+
+# -- Localhost OIDC callback listener (Vault CLI-style flow).
+# The broker starts a temporary HTTP server on this address to capture
+# the OIDC redirect.  No public callback endpoint is needed.
+# IMPORTANT: The Vault OIDC role and Keycloak client must both include
+# the redirectURI in their allowed redirect URIs.
+oidcCallback:
+  # -- Listen address for the temporary callback server
+  listenHost: "127.0.0.1"
+  # -- Listen port for the temporary callback server
+  listenPort: 8250
+  # -- Full redirect URI passed to Vault OIDC auth_url request
+  redirectURI: "http://localhost:8250/oidc/callback"
 
 # -- Name of an existing Secret containing sensitive env vars.
-# Must contain keys: KEYCLOAK_CLIENT_SECRET, WRAPTOKEN_ENC_KEY, KC_APPROVER_USERNAME, KC_APPROVER_PASSWORD
+# Must contain keys: KEYCLOAK_CLIENT_SECRET, WRAPTOKEN_ENC_KEY, KEYCLOAK_USERNAME, KEYCLOAK_PASSWORD
 existingSecret: ""
 
-# -- Headless approver login settings (new for Node.js broker)
-approver:
-  # -- OIDC redirect URI for headless login (internal-only, intercepted by Playwright)
-  redirectURI: "http://localhost:8080/oidc/callback"
+# -- Headless OIDC login timing
+login:
   # -- Keycloak login page timeout
   loginTimeout: "2m"
   # -- Duo push approval timeout

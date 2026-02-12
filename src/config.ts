@@ -33,17 +33,22 @@ export interface Config {
   };
   vault: {
     addr: string;
-    k8sAuthPath: string;
-    k8sRole: string;
-    k8sJWTPath: string;
+    oidcMount: string;
+    oidcRole: string;
+    kvMount: string;
+    wrapTTL: string;
+  };
+  oidcCallback: {
+    listenHost: string;
+    listenPort: number;
+    redirectURI: string;
   };
   wrapTokenEncKey: Buffer;
   listenAddr: string;
   listenPort: number;
-  approver: {
+  login: {
     username: string;
     password: string;
-    redirectURI: string;
     loginTimeout: number;
     duoTimeout: number;
   };
@@ -132,17 +137,22 @@ export function loadConfig(): Config {
     },
     vault: {
       addr: requireEnv('VAULT_ADDR'),
-      k8sAuthPath: process.env.VAULT_K8S_AUTH_PATH || 'auth/kubernetes',
-      k8sRole: requireEnv('VAULT_K8S_ROLE'),
-      k8sJWTPath: process.env.VAULT_K8S_JWT_PATH || '/var/run/secrets/kubernetes.io/serviceaccount/token',
+      oidcMount: process.env.VAULT_OIDC_MOUNT || 'oidc',
+      oidcRole: process.env.VAULT_OIDC_ROLE || 'wyrd-x-pass',
+      kvMount: process.env.VAULT_KV_MOUNT || 'secret',
+      wrapTTL: process.env.VAULT_WRAP_TTL || '300s',
+    },
+    oidcCallback: {
+      listenHost: process.env.OIDC_LOCAL_LISTEN_HOST || '127.0.0.1',
+      listenPort: parseInt(process.env.OIDC_LOCAL_LISTEN_PORT || '8250', 10),
+      redirectURI: process.env.OIDC_LOCAL_REDIRECT_URI || 'http://localhost:8250/oidc/callback',
     },
     wrapTokenEncKey: Buffer.from(encKeyHex, 'hex'),
     listenAddr,
     listenPort,
-    approver: {
-      username: requireEnv('KC_APPROVER_USERNAME'),
-      password: requireEnv('KC_APPROVER_PASSWORD'),
-      redirectURI: process.env.KC_OIDC_REDIRECT_URI || 'http://localhost:8080/oidc/callback',
+    login: {
+      username: requireEnv('KEYCLOAK_USERNAME'),
+      password: requireEnv('KEYCLOAK_PASSWORD'),
       loginTimeout: parseDuration(process.env.KC_LOGIN_TIMEOUT || '2m', 120_000),
       duoTimeout: parseDuration(process.env.KC_DUO_TIMEOUT || '5m', 300_000),
     },

@@ -8,10 +8,13 @@ endif
 
 IMAGE_REF = $(REGISTRY)/$(IMAGE_NAME):$(IMAGE_TAG)
 
-.PHONY: configure build push clean create-secret
+.PHONY: init configure build push clean create-secret vault-setup
+
+init:
+	bin/xpass-admin.py init $(INIT_ARGS)
 
 configure:
-	bin/configure.py
+	bin/xpass-admin.py configure
 
 build:
 	docker build --platform=linux/amd64 -t $(IMAGE_REF) .
@@ -23,4 +26,7 @@ clean:
 	-docker rmi $(IMAGE_REF)
 
 create-secret:
-	bin/create-secret.py $(SECRET_ARGS)
+	bin/xpass-admin.py create-secret $(SECRET_ARGS)
+
+vault-setup:
+	bin/xpass-admin.py vault-setup $(VAULT_ARGS)

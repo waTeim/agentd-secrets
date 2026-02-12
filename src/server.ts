@@ -5,6 +5,7 @@ import { RequestStore } from './requestStore';
 import { initJwtMiddleware } from './jwtMiddleware';
 import { PlaywrightDriver } from './playwrightDriver';
 import { VaultClient } from './vaultClient';
+import { VaultOidcManager } from './auth/vaultOidcCliFlow';
 import { Worker } from './worker';
 import { createApiRouter, createHealthRouter } from './routes';
 import logger from './logger';
@@ -22,18 +23,29 @@ async function main() {
 
   const playwrightDriver = new PlaywrightDriver({
     headless: config.playwright.headless,
-    loginTimeout: config.approver.loginTimeout,
-    duoTimeout: config.approver.duoTimeout,
+    loginTimeout: config.login.loginTimeout,
+    duoTimeout: config.login.duoTimeout,
   });
 
-  const vaultClient = new VaultClient(
-    config.vault.addr,
-    config.vault.k8sAuthPath,
-    config.vault.k8sRole,
-    config.vault.k8sJWTPath,
+  const vaultClient = new VaultClient(config.vault.addr);
+
+  const oidcManager = new VaultOidcManager(
+    {
+      vaultAddr: config.vault.addr,
+      oidcMount: config.vault.oidcMount,
+      oidcRole: config.vault.oidcRole,
+      callbackListenHost: config.oidcCallback.listenHost,
+      callbackListenPort: config.oidcCallback.listenPort,
+      redirectURI: config.oidcCallback.redirectURI,
+      loginUsername: config.login.username,
+      loginPassword: config.login.password,
+      callbackTimeoutMs: config.login.duoTimeout,
+    },
+    playwrightDriver,
+    vaultClient,
   );
 
-  const worker = new Worker(config, store, playwrightDriver, vaultClient);
+  const worker = new Worker(config, store, oidcManager, vaultClient);
 
   // Create Express app
   const app = express();
