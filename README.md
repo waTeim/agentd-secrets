@@ -230,6 +230,107 @@ bin/xpass-admin.py vault-setup \
 
 See `bin/xpass-admin.py --help` for full usage.
 
+### Multi-Bot Sync
+
+The `sync` subcommand reads a declarative YAML config and ensures Vault policies, OIDC roles, and Keycloak users match the desired state. It supports multi-bot isolation where each bot gets its own scoped credentials.
+
+```bash
+# Show planned changes (default)
+bin/xpass-admin.py sync --vault-token $VAULT_TOKEN
+
+# Read-only check, exit code 2 if drift detected
+bin/xpass-admin.py sync --vault-token $VAULT_TOKEN --check
+
+# Apply changes
+bin/xpass-admin.py sync --vault-token $VAULT_TOKEN --apply
+
+# With OIDC client secret (needed for Vault OIDC config + IdP admin checks)
+bin/xpass-admin.py sync --vault-token $VAULT_TOKEN --oidc-client-secret $OIDC_CLIENT_SECRET --apply
+```
+
+#### Example Config (2 bots)
+
+```yaml
+vault:
+  addr: https://vault.example.com
+  oidc_mount: wyrd_auth
+  oidc_role_prefix: ""
+  allowed_redirect_uris: http://localhost:8250/oidc/callback
+  user_claim: preferred_username
+  bound_claim_key: preferred_username
+  token_ttl: 15m
+  kv_mount: projects
+  kv_version: 2
+  secret_prefix: xpass
+  wrap_ttl: 300s
+  policies:
+    shared_policy_name: xpass-shared-read
+    bot_policy_prefix: xpass-bot-
+
+oidc:
+  issuer_url: https://keycloak.example.com/realms/REALM
+  client_id: wyrd-x-pass
+  client_password: ""            # OIDC client secret (or pass via --oidc-client-secret / K8s secret)
+  username: openclaw-approver    # default headless login user
+  callback_listen_host: 127.0.0.1
+  callback_listen_port: 8250
+  callback_redirect_uri: http://localhost:8250/oidc/callback
+
+bots:
+  - name: openclaw
+    approver_username: openclaw-approver
+    approver_email: openclaw@example.com
+  - name: roadrunner
+    approver_username: roadrunner-approver
+
+kubernetes:
+  namespace: default
+  secret_name: x-pass-secrets
+```
+
+#### Per-Bot Isolation
+
+The sync subcommand enforces strict secret isolation between bots using Vault's policy system:
+
+**Secret layout** (KV v2 at `projects/`, prefix `xpass`):
+
+| Path | Access | Capabilities |
+|---|---|---|
+| `projects/data/xpass/shared/*` | All bots | read |
+| `projects/metadata/xpass/shared/*` | All bots | list |
+| `projects/data/xpass/bots/<bot>/*` | Only that bot | read |
+| `projects/metadata/xpass/bots/<bot>/*` | Only that bot | list |
+
+**Policies created:**
+
+- `xpass-shared-read` — read/list the shared subtree only
+- `xpass-bot-<name>` — read/list the bot's own subtree AND the shared subtree
+
+**Why this prevents cross-bot leakage:**
+
+1. Each bot authenticates via its own OIDC role, which binds to a unique Keycloak user (`<bot>-approver`).
+2. Each OIDC role attaches only the bot's own policy (`xpass-bot-<name>`).
+3. Bot policies use exact path prefixes — `xpass-bot-openclaw` grants access to `bots/openclaw/*` but NOT `bots/roadrunner/*`.
+4. The shared policy is embedded in each bot policy, so all bots can read shared secrets without a separate role.
+5. Vault denies any path not explicitly granted by the attached policies.
+
+#### Required Vault Permissions for Sync
+
+The admin token used with `--vault-token` needs:
+
+- `sys/auth` — list and enable auth methods
+- `sys/mounts` — list secret engines
+- `sys/policies/acl/*` — read and write policies
+- `auth/<oidc_mount>/config` — read and write OIDC config
+- `auth/<oidc_mount>/role/*` — read and write OIDC roles
+
+#### Running Sync Tests
+
+```bash
+pip install -r requirements.txt
+pytest tests/test_sync.py -v
+```
+
 ## Development
 
 ```bash

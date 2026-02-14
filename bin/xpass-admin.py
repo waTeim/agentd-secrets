@@ -23,9 +23,10 @@ import json
 import os
 import re
 import secrets
+import subprocess
 import sys
 from pathlib import Path
-from typing import Any, Dict, List, Optional
+from typing import Any, Callable, Dict, List, Optional
 
 try:
     import yaml  # type: ignore
@@ -121,6 +122,21 @@ def get_env_or_prompt(
     return default
 
 
+def _unwrap(response: Any) -> Any:
+    """Extract the 'data' payload from an hvac API response.
+
+    hvac >= 2.x returns the full Vault response envelope::
+
+        {"request_id": "...", "lease_id": "", "data": { ... }, ...}
+
+    Older versions returned just the inner dict.  This helper normalises
+    both shapes so callers always get the useful payload.
+    """
+    if isinstance(response, dict) and "data" in response and isinstance(response["data"], dict):
+        return response["data"]
+    return response
+
+
 def normalize_mount(mount: str) -> str:
     return mount.strip().rstrip("/")
 
@@ -145,6 +161,122 @@ def norm_list(x: Any) -> List[str]:
 # init subcommand
 # ---------------------------------------------------------------------------
 
+def _discover_oidc_mounts(client) -> List[Dict[str, Any]]:
+    """List all OIDC auth mounts in Vault. Returns [{path, description, ...}]."""
+    mounts: List[Dict[str, Any]] = []
+    try:
+        auths = _unwrap(client.sys.list_auth_methods()) or {}
+        for mount_key, info in auths.items():
+            if not isinstance(info, dict):
+                continue
+            if info.get("type") == "oidc":
+                mounts.append({
+                    "path": mount_key.rstrip("/"),
+                    "description": info.get("description", ""),
+                    "config": info.get("config", {}),
+                })
+    except Exception as e:
+        print(f"  [warn] could not list auth methods: {e}")
+    return mounts
+
+
+def _select_or_create_oidc_mount(
+    client,
+    mounts: List[Dict[str, Any]],
+    cli_mount: Optional[str],
+    create_mount: bool,
+    config: Dict[str, Any],
+) -> str:
+    """Resolve which OIDC mount to use. May create a new one.
+
+    Priority:
+      1. --oidc-mount flag (explicit)
+      2. Interactive selection when multiple mounts exist
+      3. Auto-select the single existing mount
+      4. Create a new mount (if --create-mount or interactive confirmation)
+    """
+    # --- CLI flag takes precedence ---
+    if cli_mount:
+        mount = normalize_mount(cli_mount)
+        existing_paths = [m["path"] for m in mounts]
+        if mount in existing_paths:
+            print(f"  [selected]   vault.oidc_mount = {mount} (from --oidc-mount)")
+            return mount
+        # Specified mount doesn't exist yet
+        if create_mount:
+            print(f"  [creating]   OIDC auth mount: {mount}/")
+            client.sys.enable_auth_method(method_type="oidc", path=mount)
+            return mount
+        # In interactive mode, ask; in non-interactive, error
+        if sys.stdin.isatty():
+            ans = input(f"  OIDC mount '{mount}' not found. Create it? [Y/n]: ").strip().lower()
+            if ans in ("", "y", "yes"):
+                print(f"  [creating]   OIDC auth mount: {mount}/")
+                client.sys.enable_auth_method(method_type="oidc", path=mount)
+                return mount
+        raise SystemExit(
+            f"OIDC mount '{mount}' does not exist. Use --create-mount to create it."
+        )
+
+    # --- No CLI flag: select from discovered mounts ---
+    if len(mounts) == 1:
+        mount = mounts[0]["path"]
+        desc = mounts[0]["description"]
+        label = f" ({desc})" if desc else ""
+        print(f"  [discovered] vault.oidc_mount = {mount}{label}")
+        return mount
+
+    if len(mounts) > 1:
+        print(f"\n  Found {len(mounts)} OIDC auth mounts:")
+        for i, m in enumerate(mounts, 1):
+            desc = f" — {m['description']}" if m["description"] else ""
+            print(f"    {i}) {m['path']}/{desc}")
+        print(f"    {len(mounts) + 1}) Create a new OIDC mount")
+
+        if sys.stdin.isatty():
+            while True:
+                choice = input(f"  Select mount [1-{len(mounts) + 1}]: ").strip()
+                if choice.isdigit():
+                    idx = int(choice)
+                    if 1 <= idx <= len(mounts):
+                        mount = mounts[idx - 1]["path"]
+                        print(f"  [selected]   vault.oidc_mount = {mount}")
+                        return mount
+                    if idx == len(mounts) + 1:
+                        break  # fall through to creation
+                print(f"    Invalid choice. Enter 1-{len(mounts) + 1}")
+        else:
+            # Non-interactive with multiple mounts: use config default or first
+            cfg_mount = deep_get(config, "vault.oidc_mount")
+            existing_paths = [m["path"] for m in mounts]
+            if cfg_mount and cfg_mount in existing_paths:
+                print(f"  [config]     vault.oidc_mount = {cfg_mount}")
+                return cfg_mount
+            mount = mounts[0]["path"]
+            print(f"  [auto]       vault.oidc_mount = {mount} (first of {len(mounts)})")
+            return mount
+
+    # --- No mounts found (or user chose "create new") ---
+    cfg_mount = deep_get(config, "vault.oidc_mount", "oidc")
+    if create_mount:
+        print(f"  [creating]   OIDC auth mount: {cfg_mount}/")
+        client.sys.enable_auth_method(method_type="oidc", path=cfg_mount)
+        return cfg_mount
+
+    if sys.stdin.isatty():
+        default_name = cfg_mount
+        name = input(f"  No OIDC auth mount found. Create one? Name [{default_name}]: ").strip()
+        mount = name if name else default_name
+        print(f"  [creating]   OIDC auth mount: {mount}/")
+        client.sys.enable_auth_method(method_type="oidc", path=mount)
+        return mount
+
+    # Non-interactive, no mounts, no --create-mount
+    print(f"  [not found]  No OIDC auth mounts. Use --create-mount to create one.")
+    print(f"  [default]    vault.oidc_mount = {cfg_mount}")
+    return cfg_mount
+
+
 def cmd_init(args: argparse.Namespace) -> int:
     """Query Vault to auto-discover configuration values."""
     try:
@@ -168,24 +300,12 @@ def cmd_init(args: argparse.Namespace) -> int:
     config_path = Path(args.config) if args.config else default_config_path()
     config = load_config(config_path)
 
-    # -- Discover auth mounts ------------------------------------------------
-    oidc_mount = None
-    try:
-        auths = client.sys.list_auth_methods() or {}
-        for mount_key, info in auths.items():
-            auth_type = (info or {}).get("type", "")
-            if auth_type == "oidc" and oidc_mount is None:
-                oidc_mount = mount_key.rstrip("/")
-    except Exception as e:
-        print(f"  [warn] could not list auth methods: {e}")
-
-    if oidc_mount:
-        print(f"  [discovered] vault.oidc_mount = {oidc_mount}")
-        deep_set(config, "vault.oidc_mount", oidc_mount)
-    else:
-        oidc_mount = deep_get(config, "vault.oidc_mount", "oidc")
-        print(f"  [default]    vault.oidc_mount = {oidc_mount}")
-        deep_set(config, "vault.oidc_mount", oidc_mount)
+    # -- Discover and select OIDC auth mount ---------------------------------
+    oidc_mounts = _discover_oidc_mounts(client)
+    oidc_mount = _select_or_create_oidc_mount(
+        client, oidc_mounts, args.oidc_mount, args.create_mount, config,
+    )
+    deep_set(config, "vault.oidc_mount", oidc_mount)
 
     deep_set(config, "vault.addr", vault_addr)
     print(f"  [set]        vault.addr = {vault_addr}")
@@ -205,22 +325,22 @@ def cmd_init(args: argparse.Namespace) -> int:
         print(f"  [warn] could not read OIDC config: {e}")
 
     if oidc_discovery_url:
-        print(f"  [discovered] keycloak.issuer_url = {oidc_discovery_url}")
-        deep_set(config, "keycloak.issuer_url", oidc_discovery_url)
+        print(f"  [discovered] oidc.issuer_url = {oidc_discovery_url}")
+        deep_set(config, "oidc.issuer_url", oidc_discovery_url)
         # Derive realm from issuer URL: .../realms/<realm>
         m = re.search(r"/realms/([^/]+)/?$", oidc_discovery_url)
         if m:
             realm = m.group(1)
-            print(f"  [derived]    keycloak.realm = {realm}")
-            deep_set(config, "keycloak.realm", realm)
+            print(f"  [derived]    oidc.realm = {realm}")
+            deep_set(config, "oidc.realm", realm)
     else:
-        print("  [not found]  keycloak.issuer_url")
+        print("  [not found]  oidc.issuer_url")
 
     if oidc_client_id:
-        print(f"  [discovered] keycloak.client_id = {oidc_client_id}")
-        deep_set(config, "keycloak.client_id", oidc_client_id)
+        print(f"  [discovered] oidc.client_id = {oidc_client_id}")
+        deep_set(config, "oidc.client_id", oidc_client_id)
     else:
-        print("  [not found]  keycloak.client_id")
+        print("  [not found]  oidc.client_id")
 
     oidc_role = default_role or deep_get(config, "vault.oidc_role", "wyrd-x-pass")
     if default_role:
@@ -251,16 +371,16 @@ def cmd_init(args: argparse.Namespace) -> int:
                 # Derive oidc_callback settings from the first localhost URI
                 for uri in redirect_uris:
                     if "localhost" in uri or "127.0.0.1" in uri:
-                        deep_set(config, "oidc_callback.redirect_uri", uri)
+                        deep_set(config, "oidc.callback_redirect_uri", uri)
                         try:
                             from urllib.parse import urlparse
                             parsed = urlparse(uri)
                             if parsed.port:
-                                deep_set(config, "oidc_callback.listen_port", parsed.port)
-                            deep_set(config, "oidc_callback.listen_host", parsed.hostname or DEFAULT_OIDC_LISTEN_HOST)
+                                deep_set(config, "oidc.callback_listen_port", parsed.port)
+                            deep_set(config, "oidc.callback_listen_host", parsed.hostname or DEFAULT_OIDC_LISTEN_HOST)
                         except Exception:
                             pass
-                        print(f"  [derived]    oidc_callback.redirect_uri = {uri}")
+                        print(f"  [derived]    oidc.callback_redirect_uri = {uri}")
                         break
 
             user_claim = role_data.get("user_claim")
@@ -292,7 +412,7 @@ def cmd_init(args: argparse.Namespace) -> int:
     policy_name = deep_get(config, "vault.policy_name")
     if policy_name:
         try:
-            pol = client.sys.read_policy(name=policy_name)
+            pol = _unwrap(client.sys.read_policy(name=policy_name))
             rules = ""
             if isinstance(pol, dict):
                 rules = pol.get("rules") or ""
@@ -322,11 +442,12 @@ def cmd_init(args: argparse.Namespace) -> int:
         "vault.kv_mount": "secret",
         "vault.secret_prefix": "xpass",
         "vault.wrap_ttl": "300s",
-        "keycloak.client_id": "wyrd-x-pass",
-        "keycloak.username": "wyrd-x-pass-approver",
-        "oidc_callback.listen_host": DEFAULT_OIDC_LISTEN_HOST,
-        "oidc_callback.listen_port": DEFAULT_OIDC_LISTEN_PORT,
-        "oidc_callback.redirect_uri": DEFAULT_OIDC_REDIRECT_URI,
+        "oidc.client_id": "wyrd-x-pass",
+        "oidc.client_password": "",
+        "oidc.username": "wyrd-x-pass-approver",
+        "oidc.callback_listen_host": DEFAULT_OIDC_LISTEN_HOST,
+        "oidc.callback_listen_port": DEFAULT_OIDC_LISTEN_PORT,
+        "oidc.callback_redirect_uri": DEFAULT_OIDC_REDIRECT_URI,
         "kubernetes.namespace": "default",
         "kubernetes.secret_name": "x-pass-secrets",
         "playwright.headless": True,
@@ -338,10 +459,15 @@ def cmd_init(args: argparse.Namespace) -> int:
         if deep_get(config, key) is None:
             deep_set(config, key, default_val)
 
+    if "bots" not in config:
+        config["bots"] = [
+            {"name": "EXAMPLE", "approver_username": "EXAMPLE-approver"},
+        ]
+
     save_config(config, config_path)
     print("\n[done] init complete.")
     print("\nNOTE: The Vault OIDC role and Keycloak client must both allow")
-    print(f"  the redirect URI: {deep_get(config, 'oidc_callback.redirect_uri')}")
+    print(f"  the redirect URI: {deep_get(config, 'oidc.callback_redirect_uri')}")
     return 0
 
 
@@ -470,7 +596,7 @@ def cmd_create_secret(args: argparse.Namespace) -> int:
                 namespace = "default"
 
     keycloak_username = args.keycloak_username or deep_get(
-        config, "keycloak.username", "wyrd-x-pass-approver",
+        config, "oidc.username", "wyrd-x-pass-approver",
     )
 
     print("=== x-pass admin — create-secret ===")
@@ -525,10 +651,10 @@ def cmd_create_secret(args: argparse.Namespace) -> int:
 # ---------------------------------------------------------------------------
 
 def ensure_oidc_auth_enabled(client, mount_point: str) -> None:
-    auths = client.sys.list_auth_methods() or {}
+    auths = _unwrap(client.sys.list_auth_methods()) or {}
     key = f"{mount_point}/"
     if key in auths:
-        current_type = (auths[key] or {}).get("type")
+        current_type = (auths[key] or {}).get("type") if isinstance(auths[key], dict) else None
         if current_type != "oidc":
             raise SystemExit(
                 f"Auth mount '{mount_point}/' exists but is type '{current_type}', not 'oidc'. "
@@ -544,7 +670,7 @@ def ensure_oidc_auth_enabled(client, mount_point: str) -> None:
 def ensure_policy(client, policy_name: str, policy_hcl: str) -> None:
     existing = None
     try:
-        existing = client.sys.read_policy(name=policy_name)
+        existing = _unwrap(client.sys.read_policy(name=policy_name))
     except Exception:
         existing = None
 
@@ -698,8 +824,8 @@ def cmd_vault_setup(args: argparse.Namespace) -> int:
     oidc_role = pick(args.oidc_role, "vault.oidc_role", "wyrd-x-pass")
     vault_policy_name = pick(args.vault_policy_name, "vault.policy_name", "wyrd-x-pass-read")
 
-    keycloak_discovery_url = pick(args.keycloak_discovery_url, "keycloak.issuer_url")
-    keycloak_client_id = pick(args.keycloak_client_id, "keycloak.client_id")
+    keycloak_discovery_url = pick(args.keycloak_discovery_url, "oidc.issuer_url")
+    keycloak_client_id = pick(args.keycloak_client_id, "oidc.client_id")
     keycloak_client_secret = args.keycloak_client_secret  # always from CLI
 
     allowed_redirect_uris = pick(
@@ -781,6 +907,610 @@ def cmd_vault_setup(args: argparse.Namespace) -> int:
 
 
 # ---------------------------------------------------------------------------
+# sync subcommand — multi-bot Vault/Keycloak setup
+# ---------------------------------------------------------------------------
+
+class PlanItem:
+    """Represents one resource to check/apply during sync."""
+
+    def __init__(
+        self,
+        kind: str,
+        name: str,
+        status: str = "ok",
+        diff: str = "",
+        apply_fn: Optional[Callable[[], None]] = None,
+    ):
+        self.kind = kind        # e.g. "policy", "oidc_role", "kc_user"
+        self.name = name        # human-readable identifier
+        self.status = status    # "ok", "drift", "missing", "error"
+        self.diff = diff        # human-readable diff summary
+        self.apply_fn = apply_fn
+
+
+# -- Policy HCL builders ---------------------------------------------------
+
+def build_shared_policy_hcl(kv_mount: str, secret_prefix: str) -> str:
+    """Build HCL for the shared-read policy (read/list shared subtree)."""
+    return f'''\
+path "{kv_mount}/data/{secret_prefix}/shared/*" {{
+  capabilities = ["read"]
+}}
+
+path "{kv_mount}/metadata/{secret_prefix}/shared/*" {{
+  capabilities = ["list"]
+}}
+'''
+
+
+def build_bot_policy_hcl(kv_mount: str, secret_prefix: str, bot_name: str) -> str:
+    """Build HCL for a bot policy (bot's own subtree + shared subtree)."""
+    return f'''\
+path "{kv_mount}/data/{secret_prefix}/bots/{bot_name}/*" {{
+  capabilities = ["read"]
+}}
+
+path "{kv_mount}/metadata/{secret_prefix}/bots/{bot_name}/*" {{
+  capabilities = ["list"]
+}}
+
+path "{kv_mount}/data/{secret_prefix}/shared/*" {{
+  capabilities = ["read"]
+}}
+
+path "{kv_mount}/metadata/{secret_prefix}/shared/*" {{
+  capabilities = ["list"]
+}}
+'''
+
+
+# -- Vault check functions --------------------------------------------------
+
+def check_kv_mount(client, kv_mount: str, kv_version: int) -> PlanItem:
+    """Verify KV mount exists and is the expected version."""
+    try:
+        mounts = _unwrap(client.sys.list_mounted_secrets_engines()) or {}
+    except Exception as e:
+        return PlanItem("kv_mount", kv_mount, "error", f"cannot list mounts: {e}")
+
+    key = f"{kv_mount}/"
+    if key not in mounts:
+        return PlanItem(
+            "kv_mount", kv_mount, "missing",
+            f"KV mount '{kv_mount}' not found. Create it manually before running sync.",
+        )
+
+    mount_info = mounts[key] or {}
+    mount_type = mount_info.get("type", "")
+    options = mount_info.get("options") or {}
+    actual_version = options.get("version", "")
+
+    if mount_type != "kv":
+        return PlanItem(
+            "kv_mount", kv_mount, "error",
+            f"mount '{kv_mount}' is type '{mount_type}', expected 'kv'",
+        )
+
+    if str(actual_version) != str(kv_version):
+        return PlanItem(
+            "kv_mount", kv_mount, "drift",
+            f"KV version is {actual_version}, expected {kv_version}",
+        )
+
+    return PlanItem("kv_mount", kv_mount, "ok")
+
+
+def check_oidc_auth_mount(client, oidc_mount: str) -> PlanItem:
+    """Verify OIDC auth mount exists; apply_fn enables it if missing."""
+    try:
+        auths = _unwrap(client.sys.list_auth_methods()) or {}
+    except Exception as e:
+        return PlanItem("oidc_mount", oidc_mount, "error", f"cannot list auth methods: {e}")
+
+    key = f"{oidc_mount}/"
+    if key in auths:
+        info = auths[key]
+        current_type = info.get("type") if isinstance(info, dict) else None
+        if current_type != "oidc":
+            return PlanItem(
+                "oidc_mount", oidc_mount, "error",
+                f"auth mount '{oidc_mount}' exists but is type '{current_type}', not 'oidc'",
+            )
+        return PlanItem("oidc_mount", oidc_mount, "ok")
+
+    def _apply():
+        client.sys.enable_auth_method(method_type="oidc", path=oidc_mount)
+
+    return PlanItem("oidc_mount", oidc_mount, "missing", "OIDC auth mount not found", _apply)
+
+
+def check_oidc_config(
+    client, oidc_mount: str, issuer_url: str, client_id: str, client_secret: Optional[str],
+) -> PlanItem:
+    """Compare non-secret OIDC config fields; apply_fn writes config."""
+    current = read_oidc_config(client, oidc_mount) or {}
+
+    diffs: List[str] = []
+    if current.get("oidc_discovery_url") != issuer_url:
+        diffs.append(f"oidc_discovery_url: {current.get('oidc_discovery_url')!r} -> {issuer_url!r}")
+    if current.get("oidc_client_id") != client_id:
+        diffs.append(f"oidc_client_id: {current.get('oidc_client_id')!r} -> {client_id!r}")
+
+    if not diffs and current.get("oidc_discovery_url"):
+        return PlanItem("oidc_config", f"auth/{oidc_mount}/config", "ok")
+
+    status = "drift" if current.get("oidc_discovery_url") else "missing"
+
+    def _apply():
+        payload = {
+            "oidc_discovery_url": issuer_url,
+            "oidc_client_id": client_id,
+        }
+        if client_secret:
+            payload["oidc_client_secret"] = client_secret
+        client.write(f"auth/{oidc_mount}/config", **payload)
+
+    return PlanItem(
+        "oidc_config", f"auth/{oidc_mount}/config", status,
+        "; ".join(diffs) if diffs else "not configured",
+        _apply,
+    )
+
+
+def check_policy(client, policy_name: str, expected_hcl: str) -> PlanItem:
+    """Compare a Vault policy's HCL; apply_fn creates/updates it."""
+    existing = None
+    try:
+        existing = _unwrap(client.sys.read_policy(name=policy_name))
+    except Exception:
+        pass
+
+    current_hcl = ""
+    if isinstance(existing, dict):
+        current_hcl = existing.get("rules") or ""
+
+    if current_hcl.strip() == expected_hcl.strip():
+        return PlanItem("policy", policy_name, "ok")
+
+    status = "drift" if current_hcl.strip() else "missing"
+    diff = "policy HCL differs" if current_hcl.strip() else "policy does not exist"
+
+    def _apply():
+        client.sys.create_or_update_policy(name=policy_name, policy=expected_hcl)
+
+    return PlanItem("policy", policy_name, status, diff, _apply)
+
+
+def check_oidc_role(
+    client,
+    oidc_mount: str,
+    role_name: str,
+    expected: Dict[str, Any],
+) -> PlanItem:
+    """Compare an OIDC role's fields; apply_fn writes the role."""
+    current = read_oidc_role(client, oidc_mount, role_name) or {}
+
+    def _norm(val):
+        return sorted(norm_list(val)) if isinstance(val, (list, str)) else val
+
+    diffs: List[str] = []
+    compare_keys = [
+        "allowed_redirect_uris", "bound_audiences", "user_claim",
+        "bound_claims", "policies", "ttl",
+    ]
+    for key in compare_keys:
+        cur_val = current.get(key)
+        exp_val = expected.get(key)
+        if key in ("allowed_redirect_uris", "bound_audiences", "policies"):
+            if _norm(cur_val) != _norm(exp_val):
+                diffs.append(f"{key}: {cur_val!r} -> {exp_val!r}")
+        elif key == "bound_claims":
+            cur_bc = cur_val or {}
+            exp_bc = exp_val or {}
+            if cur_bc != exp_bc:
+                diffs.append(f"{key}: {cur_bc!r} -> {exp_bc!r}")
+        else:
+            if cur_val != exp_val:
+                diffs.append(f"{key}: {cur_val!r} -> {exp_val!r}")
+
+    if not diffs and current.get("user_claim"):
+        return PlanItem("oidc_role", role_name, "ok")
+
+    status = "drift" if current.get("user_claim") else "missing"
+
+    def _apply():
+        payload = dict(expected)
+        payload["role_type"] = "oidc"
+        payload["oidc_scopes"] = ["openid", "profile", "email"]
+        client.write(f"auth/{oidc_mount}/role/{role_name}", **payload)
+
+    return PlanItem(
+        "oidc_role", role_name, status,
+        "; ".join(diffs) if diffs else "role does not exist",
+        _apply,
+    )
+
+
+# -- Keycloak admin client --------------------------------------------------
+
+class KeycloakAdminClient:
+    """Minimal Keycloak Admin REST API client using client credentials grant."""
+
+    def __init__(self, base_url: str, realm: str, client_id: str, client_secret: str):
+        import requests as _requests
+        self._session = _requests.Session()
+        self._base_url = base_url.rstrip("/")
+        self._realm = realm
+        self._client_id = client_id
+        self._client_secret = client_secret
+        self._token: Optional[str] = None
+
+    def get_admin_token(self) -> str:
+        if self._token:
+            return self._token
+        token_url = f"{self._base_url}/realms/{self._realm}/protocol/openid-connect/token"
+        resp = self._session.post(token_url, data={
+            "grant_type": "client_credentials",
+            "client_id": self._client_id,
+            "client_secret": self._client_secret,
+        })
+        resp.raise_for_status()
+        self._token = resp.json()["access_token"]
+        return self._token
+
+    def _admin_headers(self) -> Dict[str, str]:
+        return {"Authorization": f"Bearer {self.get_admin_token()}"}
+
+    def _admin_url(self, path: str) -> str:
+        return f"{self._base_url}/admin/realms/{self._realm}/{path.lstrip('/')}"
+
+    def find_client_by_client_id(self, client_id: str) -> Optional[Dict[str, Any]]:
+        resp = self._session.get(
+            self._admin_url("clients"),
+            params={"clientId": client_id},
+            headers=self._admin_headers(),
+        )
+        resp.raise_for_status()
+        clients = resp.json()
+        for c in clients:
+            if c.get("clientId") == client_id:
+                return c
+        return None
+
+    def get_client_redirect_uris(self, internal_id: str) -> List[str]:
+        resp = self._session.get(
+            self._admin_url(f"clients/{internal_id}"),
+            headers=self._admin_headers(),
+        )
+        resp.raise_for_status()
+        return resp.json().get("redirectUris", [])
+
+    def update_client_redirect_uris(self, internal_id: str, uris: List[str]) -> None:
+        resp = self._session.put(
+            self._admin_url(f"clients/{internal_id}"),
+            json={"redirectUris": uris},
+            headers=self._admin_headers(),
+        )
+        resp.raise_for_status()
+
+    def find_user_by_username(self, username: str) -> Optional[Dict[str, Any]]:
+        resp = self._session.get(
+            self._admin_url("users"),
+            params={"username": username, "exact": "true"},
+            headers=self._admin_headers(),
+        )
+        resp.raise_for_status()
+        users = resp.json()
+        for u in users:
+            if u.get("username") == username:
+                return u
+        return None
+
+    def create_user(self, username: str, password: str, email: Optional[str] = None) -> None:
+        payload: Dict[str, Any] = {
+            "username": username,
+            "enabled": True,
+            "credentials": [{"type": "password", "value": password, "temporary": False}],
+        }
+        if email:
+            payload["email"] = email
+        resp = self._session.post(
+            self._admin_url("users"),
+            json=payload,
+            headers=self._admin_headers(),
+        )
+        resp.raise_for_status()
+
+
+# -- Keycloak check functions -----------------------------------------------
+
+def check_kc_issuer(issuer_url: str) -> PlanItem:
+    """Basic connectivity check: fetch .well-known/openid-configuration."""
+    import requests as _requests
+    well_known = f"{issuer_url.rstrip('/')}/.well-known/openid-configuration"
+    try:
+        resp = _requests.get(well_known, timeout=10)
+        resp.raise_for_status()
+        data = resp.json()
+        if data.get("issuer"):
+            return PlanItem("kc_issuer", issuer_url, "ok")
+        return PlanItem("kc_issuer", issuer_url, "error", "no 'issuer' in response")
+    except Exception as e:
+        return PlanItem("kc_issuer", issuer_url, "error", f"connectivity check failed: {e}")
+
+
+def check_kc_client(
+    kc_admin: KeycloakAdminClient, client_id: str, required_redirect_uris: List[str],
+) -> PlanItem:
+    """Verify Keycloak client exists and has required redirect URIs."""
+    try:
+        kc_client = kc_admin.find_client_by_client_id(client_id)
+    except Exception as e:
+        return PlanItem("kc_client", client_id, "error", f"failed to query client: {e}")
+
+    if not kc_client:
+        return PlanItem("kc_client", client_id, "missing", f"client '{client_id}' not found in Keycloak")
+
+    internal_id = kc_client["id"]
+    current_uris = kc_client.get("redirectUris", [])
+    missing_uris = [u for u in required_redirect_uris if u not in current_uris]
+
+    if not missing_uris:
+        return PlanItem("kc_client", client_id, "ok")
+
+    def _apply():
+        updated = list(set(current_uris + required_redirect_uris))
+        kc_admin.update_client_redirect_uris(internal_id, updated)
+
+    return PlanItem(
+        "kc_client", client_id, "drift",
+        f"missing redirect URIs: {missing_uris}",
+        _apply,
+    )
+
+
+def check_kc_user(
+    kc_admin: KeycloakAdminClient,
+    username: str,
+    password: Optional[str] = None,
+    email: Optional[str] = None,
+) -> PlanItem:
+    """Verify Keycloak user exists; apply_fn creates if password available."""
+    try:
+        user = kc_admin.find_user_by_username(username)
+    except Exception as e:
+        return PlanItem("kc_user", username, "error", f"failed to query user: {e}")
+
+    if user:
+        return PlanItem("kc_user", username, "ok")
+
+    if not password:
+        return PlanItem(
+            "kc_user", username, "missing",
+            f"user '{username}' not found; no password available to create",
+        )
+
+    def _apply():
+        kc_admin.create_user(username, password, email=email)
+
+    return PlanItem("kc_user", username, "missing", f"user '{username}' will be created", _apply)
+
+
+# -- K8s secret reader ------------------------------------------------------
+
+def read_k8s_secret(namespace: str, secret_name: str) -> Dict[str, str]:
+    """Read and decode a Kubernetes secret. Returns decoded key-value pairs."""
+    try:
+        result = subprocess.run(
+            ["kubectl", "get", "secret", secret_name, "-n", namespace, "-o", "json"],
+            capture_output=True, text=True, check=True,
+        )
+        secret_data = json.loads(result.stdout)
+        encoded = secret_data.get("data", {})
+        return {k: base64.b64decode(v).decode() for k, v in encoded.items()}
+    except (subprocess.CalledProcessError, FileNotFoundError, json.JSONDecodeError) as e:
+        print(f"  [warn] could not read K8s secret {namespace}/{secret_name}: {e}")
+        return {}
+
+
+# -- Plan display and apply -------------------------------------------------
+
+def print_plan(plan_items: List[PlanItem]) -> None:
+    """Print a human-readable plan summary."""
+    status_symbols = {"ok": "[ok]", "drift": "[drift]", "missing": "[missing]", "error": "[ERROR]"}
+    for item in plan_items:
+        sym = status_symbols.get(item.status, "[?]")
+        line = f"  {sym:10s} {item.kind:15s} {item.name}"
+        if item.diff:
+            line += f"  — {item.diff}"
+        print(line)
+
+
+def apply_plan(plan_items: List[PlanItem]) -> int:
+    """Apply all actionable plan items. Returns count of applied items."""
+    applied = 0
+    for item in plan_items:
+        if item.status in ("drift", "missing") and item.apply_fn:
+            try:
+                print(f"  [applying] {item.kind}: {item.name}")
+                item.apply_fn()
+                item.status = "ok"
+                item.diff = "applied"
+                applied += 1
+            except Exception as e:
+                item.status = "error"
+                item.diff = f"apply failed: {e}"
+                print(f"  [ERROR]    {item.kind}: {item.name} — {e}")
+        elif item.status in ("drift", "missing") and not item.apply_fn:
+            print(f"  [skip]     {item.kind}: {item.name} — no apply action available")
+    return applied
+
+
+# -- cmd_sync orchestrator --------------------------------------------------
+
+def cmd_sync(args: argparse.Namespace) -> int:
+    """Sync Vault and Keycloak resources to match config."""
+    try:
+        import hvac
+    except ImportError:
+        raise SystemExit("hvac is required for sync. Run: pip install hvac")
+
+    config_path = Path(args.config) if args.config else default_config_path()
+    config = load_config(config_path)
+
+    # Extract config sections
+    vault_cfg = config.get("vault", {})
+    oidc_cfg = config.get("oidc", {})
+    bots = config.get("bots", [])
+    k8s_cfg = config.get("kubernetes", {})
+
+    vault_addr = vault_cfg.get("addr")
+    vault_token = args.vault_token
+    oidc_mount = normalize_mount(vault_cfg.get("oidc_mount", "oidc"))
+    oidc_role_prefix = vault_cfg.get("oidc_role_prefix", "")
+    allowed_redirect_uris = listify(vault_cfg.get("allowed_redirect_uris", DEFAULT_OIDC_REDIRECT_URI))
+    user_claim = vault_cfg.get("user_claim", "preferred_username")
+    bound_claim_key = vault_cfg.get("bound_claim_key", "preferred_username")
+    token_ttl = vault_cfg.get("token_ttl", "15m")
+    kv_mount = vault_cfg.get("kv_mount", "secret")
+    kv_version = vault_cfg.get("kv_version", 2)
+    secret_prefix = vault_cfg.get("secret_prefix", "xpass")
+
+    policies_cfg = vault_cfg.get("policies", {})
+    shared_policy_name = policies_cfg.get("shared_policy_name", "xpass-shared-read")
+    bot_policy_prefix = policies_cfg.get("bot_policy_prefix", "xpass-bot-")
+
+    issuer_url = oidc_cfg.get("issuer_url", "")
+    kc_client_id = oidc_cfg.get("client_id", "")
+
+    k8s_namespace = k8s_cfg.get("namespace", "default")
+    k8s_secret_name = k8s_cfg.get("secret_name", "x-pass-secrets")
+
+    if not vault_addr:
+        raise SystemExit("vault.addr is required in config")
+    if not vault_token:
+        raise SystemExit("--vault-token is required")
+
+    mode = "check" if args.check else ("apply" if args.apply else "plan")
+    print(f"=== x-pass admin — sync ({mode}) ===")
+    print(f"  Vault: {vault_addr}")
+    if bots:
+        print(f"  Bots:  {', '.join(b['name'] for b in bots)}")
+    else:
+        print("  Bots:  (none — add a 'bots' section to config for per-bot policies/roles)")
+
+    # 1. Read K8s secrets (best-effort, needed for apply)
+    k8s_secrets: Dict[str, str] = {}
+    if mode == "apply":
+        k8s_secrets = read_k8s_secret(k8s_namespace, k8s_secret_name)
+
+    oidc_client_secret = (
+        args.oidc_client_secret
+        or oidc_cfg.get("client_password")
+        or k8s_secrets.get("oidc_client_secret")
+        or k8s_secrets.get("keycloak_client_secret")  # legacy key
+    )
+
+    # 2. Connect to Vault
+    client = hvac.Client(url=vault_addr, token=vault_token)
+    if not client.is_authenticated():
+        raise SystemExit("Vault authentication failed (check vault addr/token).")
+
+    plan_items: List[PlanItem] = []
+
+    # 3. Check KV mount
+    plan_items.append(check_kv_mount(client, kv_mount, kv_version))
+
+    # 4. Check OIDC auth mount
+    plan_items.append(check_oidc_auth_mount(client, oidc_mount))
+
+    # 5. Check OIDC config
+    if issuer_url and kc_client_id:
+        plan_items.append(check_oidc_config(
+            client, oidc_mount, issuer_url, kc_client_id, oidc_client_secret,
+        ))
+
+    # 6. Check shared policy
+    shared_hcl = build_shared_policy_hcl(kv_mount, secret_prefix)
+    plan_items.append(check_policy(client, shared_policy_name, shared_hcl))
+
+    # 7. Per-bot checks
+    for bot in bots:
+        bot_name = bot["name"]
+        bot_policy_name = f"{bot_policy_prefix}{bot_name}"
+        role_name = f"{oidc_role_prefix}{bot_name}"
+
+        # Bot policy
+        bot_hcl = build_bot_policy_hcl(kv_mount, secret_prefix, bot_name)
+        plan_items.append(check_policy(client, bot_policy_name, bot_hcl))
+
+        # OIDC role
+        bound_claims: Dict[str, Any] = {}
+        if bound_claim_key == "preferred_username" and bot.get("approver_username"):
+            bound_claims[bound_claim_key] = bot["approver_username"]
+        elif bound_claim_key == "email" and bot.get("approver_email"):
+            bound_claims[bound_claim_key] = bot["approver_email"]
+        elif bot.get("approver_username"):
+            bound_claims[bound_claim_key] = bot["approver_username"]
+
+        expected_role = {
+            "allowed_redirect_uris": allowed_redirect_uris,
+            "bound_audiences": [kc_client_id] if kc_client_id else [],
+            "user_claim": user_claim,
+            "bound_claims": bound_claims,
+            "policies": [bot_policy_name],
+            "ttl": token_ttl,
+        }
+        plan_items.append(check_oidc_role(client, oidc_mount, role_name, expected_role))
+
+    # 8. Keycloak checks (if issuer_url and admin secret available)
+    if issuer_url:
+        plan_items.append(check_kc_issuer(issuer_url))
+
+        if oidc_client_secret and kc_client_id:
+            # Derive realm and base_url from issuer_url
+            m = re.search(r"^(https?://[^/]+)/realms/([^/]+)/?$", issuer_url)
+            if m:
+                kc_base_url = m.group(1)
+                kc_realm = m.group(2)
+                try:
+                    kc_admin = KeycloakAdminClient(kc_base_url, kc_realm, kc_client_id, oidc_client_secret)
+                    plan_items.append(check_kc_client(kc_admin, kc_client_id, allowed_redirect_uris))
+
+                    for bot in bots:
+                        username = bot.get("approver_username")
+                        if username:
+                            bot_password = k8s_secrets.get(f"bot_{bot['name']}_password")
+                            plan_items.append(check_kc_user(
+                                kc_admin, username, password=bot_password,
+                                email=bot.get("approver_email"),
+                            ))
+                except Exception as e:
+                    plan_items.append(PlanItem(
+                        "kc_admin", "keycloak", "error", f"failed to connect: {e}",
+                    ))
+
+    # 9. Print plan
+    print()
+    print_plan(plan_items)
+
+    # 10. Apply if --apply
+    if mode == "apply":
+        print()
+        count = apply_plan(plan_items)
+        print(f"\n  Applied {count} change(s).")
+
+    # 11. Exit code
+    has_drift = any(i.status in ("drift", "missing") for i in plan_items)
+    has_error = any(i.status == "error" for i in plan_items)
+    if has_error:
+        return 1
+    if mode == "check" and has_drift:
+        return 2
+    return 0
+
+
+# ---------------------------------------------------------------------------
 # Argument parser
 # ---------------------------------------------------------------------------
 
@@ -801,6 +1531,10 @@ def build_parser() -> argparse.ArgumentParser:
     p_init = subs.add_parser("init", help="Query Vault and auto-populate config")
     p_init.add_argument("--vault-addr", required=True, help="Vault URL")
     p_init.add_argument("--vault-token", required=True, help="Vault admin token")
+    p_init.add_argument("--oidc-mount", default=None,
+                        help="Use this OIDC auth mount (skip discovery/selection)")
+    p_init.add_argument("--create-mount", action="store_true",
+                        help="Create the OIDC auth mount if it doesn't exist")
 
     # -- configure -----------------------------------------------------------
     p_cfg = subs.add_parser("configure", help="Set target image config")
@@ -838,7 +1572,7 @@ def build_parser() -> argparse.ArgumentParser:
     p_vs.add_argument("--oidc-role", default=None, help="Vault OIDC role name")
     p_vs.add_argument("--vault-policy-name", default=None, help="Vault policy name")
     p_vs.add_argument("--keycloak-discovery-url", default=None,
-                      help="Keycloak realm URL (default: from config keycloak.issuer_url)")
+                      help="OIDC discovery/issuer URL (default: from config oidc.issuer_url)")
     p_vs.add_argument("--keycloak-client-id", default=None, help="OIDC client id")
     p_vs.add_argument("--keycloak-client-secret", required=True, help="OIDC client secret")
     p_vs.add_argument("--allowed-redirect-uris", default=None,
@@ -849,6 +1583,19 @@ def build_parser() -> argparse.ArgumentParser:
     p_vs.add_argument("--token-ttl", default=None, help="Vault token TTL")
     p_vs.add_argument("--kv-mount", default=None, help="KV mount")
     p_vs.add_argument("--secret-prefix", default=None, help="Prefix under KV mount")
+
+    # -- sync ----------------------------------------------------------------
+    p_sync = subs.add_parser("sync", help="Sync Vault/Keycloak resources to match config")
+    p_sync.add_argument("--vault-token", required=True, help="Vault admin token")
+    p_sync.add_argument("--oidc-client-secret", default=None,
+                        help="OIDC client secret for Vault auth config (also read from K8s secret key 'oidc_client_secret')")
+    mode_grp = p_sync.add_mutually_exclusive_group()
+    mode_grp.add_argument("--check", action="store_true",
+                          help="Read-only mode; exit 2 on drift")
+    mode_grp.add_argument("--plan", action="store_true", default=True,
+                          help="Show plan without applying (default)")
+    mode_grp.add_argument("--apply", action="store_true",
+                          help="Apply changes to match config")
 
     return parser
 
@@ -866,6 +1613,7 @@ def main() -> int:
         "configure": cmd_configure,
         "create-secret": cmd_create_secret,
         "vault-setup": cmd_vault_setup,
+        "sync": cmd_sync,
     }
 
     return dispatch[args.command](args)
