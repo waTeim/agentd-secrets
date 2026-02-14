@@ -1,4 +1,4 @@
-agent-secretd has been deployed.
+agentd-secrets has been deployed.
 
 1. Get the application URL by running these commands:
 {{- if .Values.ingress.enabled }}
@@ -8,21 +8,21 @@ agent-secretd has been deployed.
   {{- end }}
 {{- end }}
 {{- else if contains "NodePort" .Values.service.type }}
-  export NODE_PORT=$(kubectl get --namespace {{ .Release.Namespace }} -o jsonpath="{.spec.ports[0].nodePort}" services {{ include "agent-secretd.fullname" . }})
+  export NODE_PORT=$(kubectl get --namespace {{ .Release.Namespace }} -o jsonpath="{.spec.ports[0].nodePort}" services {{ include "agentd-secrets.fullname" . }})
   export NODE_IP=$(kubectl get nodes --namespace {{ .Release.Namespace }} -o jsonpath="{.items[0].status.addresses[0].address}")
   echo http://$NODE_IP:$NODE_PORT
 {{- else if contains "LoadBalancer" .Values.service.type }}
      NOTE: It may take a few minutes for the LoadBalancer IP to be available.
-           You can watch the status by running 'kubectl get --namespace {{ .Release.Namespace }} svc -w {{ include "agent-secretd.fullname" . }}'
-  export SERVICE_IP=$(kubectl get svc --namespace {{ .Release.Namespace }} {{ include "agent-secretd.fullname" . }} --template "{{"{{ range (index .status.loadBalancer.ingress 0) }}{{.}}{{ end }}"}}")
+           You can watch the status by running 'kubectl get --namespace {{ .Release.Namespace }} svc -w {{ include "agentd-secrets.fullname" . }}'
+  export SERVICE_IP=$(kubectl get svc --namespace {{ .Release.Namespace }} {{ include "agentd-secrets.fullname" . }} --template "{{"{{ range (index .status.loadBalancer.ingress 0) }}{{.}}{{ end }}"}}")
   echo http://$SERVICE_IP:{{ .Values.service.port }}
 {{- else if contains "ClusterIP" .Values.service.type }}
-  kubectl --namespace {{ .Release.Namespace }} port-forward svc/{{ include "agent-secretd.fullname" . }} 8080:{{ .Values.service.port }}
+  kubectl --namespace {{ .Release.Namespace }} port-forward svc/{{ include "agentd-secrets.fullname" . }} 8080:{{ .Values.service.port }}
   echo "Healthz:  http://127.0.0.1:8080/healthz"
   echo "Readyz:   http://127.0.0.1:8080/readyz"
 {{- end }}
 
-2. Ensure the secret "{{ .Values.existingSecret | default (printf "%s-secrets" (include "agent-secretd.fullname" .)) }}" contains:
+2. Ensure the secret "{{ .Values.existingSecret | default (printf "%s-secrets" (include "agentd-secrets.fullname" .)) }}" contains:
    - KEYCLOAK_CLIENT_SECRET
    - WRAPTOKEN_ENC_KEY
    - KC_APPROVER_USERNAME

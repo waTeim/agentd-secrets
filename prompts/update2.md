@@ -1,7 +1,7 @@
 # Task: Extend the admin tool to validate & construct Vault/Keycloak robot-secret security setup from config (idempotent)
 
 ## Context
-We have an admin tool repository that already manages some setup for our robot-secret broker (“agent-secretd”). We now want it to:
+We have an admin tool repository that already manages some setup for our robot-secret broker (“agentd-secrets”). We now want it to:
 - Read a YAML configuration file describing expected Vault + Keycloak settings
 - Check the current state in Vault/Keycloak and report drift/missing resources
 - If missing or incorrect, create/update resources to match the config
@@ -22,7 +22,7 @@ We have (or will have) bots such as:
 Each bot must not be able to read other bots’ secrets from Vault, but all may read shared secrets.
 
 ## Desired Secret Layout Strategy (must implement)
-Given a KV v2 mount `kv_mount` and prefix `secret_prefix` (example `projects` + `agent-secretd`):
+Given a KV v2 mount `kv_mount` and prefix `secret_prefix` (example `projects` + `agentd-secrets`):
 - Shared secrets live under:
   - `<kv_mount>/data/<secret_prefix>/shared/*` (KV v2 read)
   - `<kv_mount>/metadata/<secret_prefix>/shared/*` (KV v2 list)
@@ -31,15 +31,15 @@ Given a KV v2 mount `kv_mount` and prefix `secret_prefix` (example `projects` + 
   - `<kv_mount>/metadata/<secret_prefix>/bots/<bot_name>/*`
 
 Vault security:
-- For each bot `<bot_name>`, create a dedicated Vault policy `agent-secretd-bot-<bot_name>` granting:
+- For each bot `<bot_name>`, create a dedicated Vault policy `agentd-secrets-bot-<bot_name>` granting:
   - read/list bot-private subtree for that bot
   - read/list shared subtree
-- Create a shared-only policy `agent-secretd-shared-read` (read/list shared subtree)
+- Create a shared-only policy `agentd-secrets-shared-read` (read/list shared subtree)
 - Create a Vault OIDC role per bot named exactly `<bot_name>` (or configurable prefix), under `auth/<oidc_mount>/role/<role>`
   - The role binds to a Keycloak claim (configurable):
     - preferred_username == `<bot_name>-approver` OR email == `<some email>`
   - The role attaches only policies:
-    - `agent-secretd-bot-<bot_name>` (which already includes shared)
+    - `agentd-secrets-bot-<bot_name>` (which already includes shared)
   - The role sets:
     - `allowed_redirect_uris` to include the localhost callback (emulating `vault login -method=oidc`): `http://localhost:8250/oidc/callback`
     - `bound_audiences` to the Keycloak client id (config)
@@ -66,14 +66,14 @@ vault:
   token_ttl: 15m
   kv_mount: projects
   kv_version: 2
-  secret_prefix: agent-secretd
+  secret_prefix: agentd-secrets
   wrap_ttl: 300s
   policies:
-    shared_policy_name: agent-secretd-shared-read
-    bot_policy_prefix: agent-secretd-bot-
+    shared_policy_name: agentd-secrets-shared-read
+    bot_policy_prefix: agentd-secrets-bot-
 keycloak:
   issuer_url: https://keycloak.example.com/realms/<REALM>
-  client_id: agent-secretd
+  client_id: agentd-secrets
   # client_secret is stored in Kubernetes secret; admin tool may need it to update Vault auth config
 bots:
   - name: openclaw
@@ -84,7 +84,7 @@ bots:
 
 kubernetes:
   namespace: default
-  secret_name: agent-secretd-secrets
+  secret_name: agentd-secrets-secrets
   # keys inside this k8s secret may include keycloak_client_secret, bot passwords, etc.
 
 The tool should accept:

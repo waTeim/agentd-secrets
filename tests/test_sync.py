@@ -1,4 +1,4 @@
-"""Tests for the agent-secretd-admin sync subcommand."""
+"""Tests for the agentd-secrets-admin sync subcommand."""
 from __future__ import annotations
 
 import base64
@@ -15,7 +15,7 @@ import pytest
 sys.path.insert(0, str(Path(__file__).resolve().parent.parent / "bin"))
 
 import importlib
-xpass_admin = importlib.import_module("agent-secretd-admin")
+xpass_admin = importlib.import_module("agentd-secrets-admin")
 
 
 # ---------------------------------------------------------------------------
@@ -177,7 +177,7 @@ class MockKCSession:
 def make_config(
     bots: Optional[list] = None,
     kv_mount: str = "projects",
-    secret_prefix: str = "agent-secretd",
+    secret_prefix: str = "agentd-secrets",
     oidc_mount: str = "wyrd_auth",
 ) -> dict:
     if bots is None:
@@ -199,18 +199,18 @@ def make_config(
             "secret_prefix": secret_prefix,
             "wrap_ttl": "300s",
             "policies": {
-                "shared_policy_name": "agent-secretd-shared-read",
-                "bot_policy_prefix": "agent-secretd-bot-",
+                "shared_policy_name": "agentd-secrets-shared-read",
+                "bot_policy_prefix": "agentd-secrets-bot-",
             },
         },
         "oidc": {
             "issuer_url": "https://keycloak.example.com/realms/REALM",
-            "client_id": "agent-secretd",
+            "client_id": "agentd-secrets",
         },
         "bots": bots,
         "kubernetes": {
             "namespace": "default",
-            "secret_name": "agent-secretd-secrets",
+            "secret_name": "agentd-secrets-secrets",
         },
     }
 
@@ -330,27 +330,27 @@ class TestPolicyHCLBuilders:
     """Test that policy HCL is generated correctly."""
 
     def test_shared_policy_hcl(self):
-        hcl = xpass_admin.build_shared_policy_hcl("projects", "agent-secretd")
-        assert 'path "projects/data/agent-secretd/shared/*"' in hcl
+        hcl = xpass_admin.build_shared_policy_hcl("projects", "agentd-secrets")
+        assert 'path "projects/data/agentd-secrets/shared/*"' in hcl
         assert '"read"' in hcl
-        assert 'path "projects/metadata/agent-secretd/shared/*"' in hcl
+        assert 'path "projects/metadata/agentd-secrets/shared/*"' in hcl
         assert '"list"' in hcl
         # Should NOT contain bot paths
         assert "bots" not in hcl
 
     def test_bot_policy_hcl(self):
-        hcl = xpass_admin.build_bot_policy_hcl("projects", "agent-secretd", "openclaw")
+        hcl = xpass_admin.build_bot_policy_hcl("projects", "agentd-secrets", "openclaw")
         # Bot-specific paths
-        assert 'path "projects/data/agent-secretd/bots/openclaw/*"' in hcl
-        assert 'path "projects/metadata/agent-secretd/bots/openclaw/*"' in hcl
+        assert 'path "projects/data/agentd-secrets/bots/openclaw/*"' in hcl
+        assert 'path "projects/metadata/agentd-secrets/bots/openclaw/*"' in hcl
         # Also includes shared
-        assert 'path "projects/data/agent-secretd/shared/*"' in hcl
-        assert 'path "projects/metadata/agent-secretd/shared/*"' in hcl
+        assert 'path "projects/data/agentd-secrets/shared/*"' in hcl
+        assert 'path "projects/metadata/agentd-secrets/shared/*"' in hcl
 
     def test_bot_policy_isolation(self):
         """Bot A's policy must not grant access to bot B's paths."""
-        hcl_a = xpass_admin.build_bot_policy_hcl("projects", "agent-secretd", "openclaw")
-        hcl_b = xpass_admin.build_bot_policy_hcl("projects", "agent-secretd", "roadrunner")
+        hcl_a = xpass_admin.build_bot_policy_hcl("projects", "agentd-secrets", "openclaw")
+        hcl_b = xpass_admin.build_bot_policy_hcl("projects", "agentd-secrets", "roadrunner")
         assert "openclaw" in hcl_a
         assert "roadrunner" not in hcl_a
         assert "roadrunner" in hcl_b
@@ -373,13 +373,13 @@ class TestFreshInstall:
         assert "wyrd_auth/" in state["auth_methods"]
 
         # Shared policy was created
-        assert "agent-secretd-shared-read" in state["policies"]
-        shared_hcl = state["policies"]["agent-secretd-shared-read"]
+        assert "agentd-secrets-shared-read" in state["policies"]
+        shared_hcl = state["policies"]["agentd-secrets-shared-read"]
         assert "shared" in shared_hcl
 
         # Bot policies were created
-        assert "agent-secretd-bot-openclaw" in state["policies"]
-        assert "agent-secretd-bot-roadrunner" in state["policies"]
+        assert "agentd-secrets-bot-openclaw" in state["policies"]
+        assert "agentd-secrets-bot-roadrunner" in state["policies"]
 
         # OIDC config was written
         assert "auth/wyrd_auth/config" in state["data"]
@@ -390,11 +390,11 @@ class TestFreshInstall:
 
         # Verify role bindings
         openclaw_role = state["data"]["auth/wyrd_auth/role/openclaw"]["data"]
-        assert openclaw_role["policies"] == ["agent-secretd-bot-openclaw"]
+        assert openclaw_role["policies"] == ["agentd-secrets-bot-openclaw"]
         assert openclaw_role["bound_claims"] == {"preferred_username": "openclaw-approver"}
 
         roadrunner_role = state["data"]["auth/wyrd_auth/role/roadrunner"]["data"]
-        assert roadrunner_role["policies"] == ["agent-secretd-bot-roadrunner"]
+        assert roadrunner_role["policies"] == ["agentd-secrets-bot-roadrunner"]
         assert roadrunner_role["bound_claims"] == {"preferred_username": "roadrunner-approver"}
 
 
@@ -432,7 +432,7 @@ class TestDriftDetection:
         _, state, _ = run_sync(config, vault_state, args_apply)
 
         # Tamper with shared policy
-        state["policies"]["agent-secretd-shared-read"] = "# tampered policy"
+        state["policies"]["agentd-secrets-shared-read"] = "# tampered policy"
 
         # Check mode
         args_check = make_args(check=True)
@@ -440,7 +440,7 @@ class TestDriftDetection:
 
         assert exit_code == 2
         drift_items = [i for i in items if i.status == "drift"]
-        assert any(i.name == "agent-secretd-shared-read" for i in drift_items)
+        assert any(i.name == "agentd-secrets-shared-read" for i in drift_items)
 
 
 class TestDriftApply:
@@ -455,7 +455,7 @@ class TestDriftApply:
         _, state, _ = run_sync(config, vault_state, args_apply)
 
         # Tamper with bot policy
-        state["policies"]["agent-secretd-bot-openclaw"] = "# tampered"
+        state["policies"]["agentd-secrets-bot-openclaw"] = "# tampered"
 
         # Tamper with role (change bound_claims)
         role_data = state["data"]["auth/wyrd_auth/role/openclaw"]["data"]
@@ -468,8 +468,8 @@ class TestDriftApply:
         assert exit_code == 0
 
         # Policy should be restored
-        assert "tampered" not in state["policies"]["agent-secretd-bot-openclaw"]
-        assert "openclaw" in state["policies"]["agent-secretd-bot-openclaw"]
+        assert "tampered" not in state["policies"]["agentd-secrets-bot-openclaw"]
+        assert "openclaw" in state["policies"]["agentd-secrets-bot-openclaw"]
 
         # Role should be restored
         restored_role = state["data"]["auth/wyrd_auth/role/openclaw"]["data"]
@@ -514,8 +514,8 @@ class TestMultiBotIsolation:
         args = make_args(apply=True)
         _, state, _ = run_sync(config, vault_state, args)
 
-        openclaw_hcl = state["policies"]["agent-secretd-bot-openclaw"]
-        roadrunner_hcl = state["policies"]["agent-secretd-bot-roadrunner"]
+        openclaw_hcl = state["policies"]["agentd-secrets-bot-openclaw"]
+        roadrunner_hcl = state["policies"]["agentd-secrets-bot-roadrunner"]
 
         # openclaw policy grants access to openclaw subtree + shared
         assert "bots/openclaw" in openclaw_hcl
@@ -537,7 +537,7 @@ class TestMultiBotIsolation:
         args = make_args(apply=True)
         _, state, _ = run_sync(config, vault_state, args)
 
-        shared_hcl = state["policies"]["agent-secretd-shared-read"]
+        shared_hcl = state["policies"]["agentd-secrets-shared-read"]
         assert "shared" in shared_hcl
         assert "bots/" not in shared_hcl
 
@@ -550,10 +550,10 @@ class TestMultiBotIsolation:
         _, state, _ = run_sync(config, vault_state, args)
 
         openclaw_role = state["data"]["auth/wyrd_auth/role/openclaw"]["data"]
-        assert openclaw_role["policies"] == ["agent-secretd-bot-openclaw"]
+        assert openclaw_role["policies"] == ["agentd-secrets-bot-openclaw"]
 
         roadrunner_role = state["data"]["auth/wyrd_auth/role/roadrunner"]["data"]
-        assert roadrunner_role["policies"] == ["agent-secretd-bot-roadrunner"]
+        assert roadrunner_role["policies"] == ["agentd-secrets-bot-roadrunner"]
 
 
 class TestKeycloakChecks:
@@ -565,7 +565,7 @@ class TestKeycloakChecks:
             "clients": [
                 {
                     "id": "internal-1",
-                    "clientId": "agent-secretd",
+                    "clientId": "agentd-secrets",
                     "redirectUris": ["https://other.example.com/callback"],
                 }
             ],
@@ -592,7 +592,7 @@ class TestKeycloakChecks:
             "clients": [
                 {
                     "id": "internal-1",
-                    "clientId": "agent-secretd",
+                    "clientId": "agentd-secrets",
                     "redirectUris": ["http://localhost:8250/oidc/callback"],
                 }
             ],
@@ -618,7 +618,7 @@ class TestKeycloakChecks:
             "clients": [
                 {
                     "id": "internal-1",
-                    "clientId": "agent-secretd",
+                    "clientId": "agentd-secrets",
                     "redirectUris": ["http://localhost:8250/oidc/callback"],
                 }
             ],
@@ -641,7 +641,7 @@ class TestKeycloakChecks:
             "clients": [
                 {
                     "id": "internal-1",
-                    "clientId": "agent-secretd",
+                    "clientId": "agentd-secrets",
                     "redirectUris": ["http://localhost:8250/oidc/callback"],
                 }
             ],

@@ -11,10 +11,10 @@ IMAGE_REF = $(REGISTRY)/$(IMAGE_NAME):$(IMAGE_TAG)
 .PHONY: init configure build push clean create-secret vault-setup
 
 init:
-	bin/agent-secretd-admin.py init $(INIT_ARGS)
+	bin/agentd-secrets-admin.py init $(INIT_ARGS)
 
 configure:
-	bin/agent-secretd-admin.py configure
+	bin/agentd-secrets-admin.py configure
 
 build:
 	docker build --platform=linux/amd64 -t $(IMAGE_REF) .
@@ -26,7 +26,7 @@ clean:
 	-docker rmi $(IMAGE_REF)
 
 create-secret:
-	bin/agent-secretd-admin.py create-secret $(SECRET_ARGS)
+	bin/agentd-secrets-admin.py create-secret $(SECRET_ARGS)
 
 vault-setup:
-	bin/agent-secretd-admin.py vault-setup $(VAULT_ARGS)
+	bin/agentd-secrets-admin.py vault-setup $(VAULT_ARGS)

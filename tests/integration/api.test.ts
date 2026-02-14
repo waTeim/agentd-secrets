@@ -22,7 +22,7 @@ describe('API Integration Tests', () => {
   const encKey = Buffer.from(encKeyHex, 'hex');
   const fixtureConfig = path.join(__dirname, '..', 'fixtures', 'config.yaml');
   const issuer = 'https://keycloak.example.com/realms/test';
-  const audience = 'agent-secretd';
+  const audience = 'agentd-secrets';
 
   let jwksServer: http.Server;
   let jwksPort: number;
@@ -107,12 +107,12 @@ describe('API Integration Tests', () => {
     // Set up env and load config
     process.env.KEYCLOAK_ISSUER_URL = `http://127.0.0.1:${keycloakPort}/realms/test`;
     process.env.KEYCLOAK_REALM = 'test';
-    process.env.KEYCLOAK_CLIENT_ID = 'agent-secretd';
+    process.env.KEYCLOAK_CLIENT_ID = 'agentd-secrets';
     process.env.KEYCLOAK_CLIENT_SECRET = 'test-secret';
     process.env.KEYCLOAK_AUDIENCE = audience;
     process.env.VAULT_ADDR = `http://127.0.0.1:${vaultPort}`;
     process.env.VAULT_OIDC_MOUNT = 'oidc';
-    process.env.VAULT_OIDC_ROLE = 'agent-secretd';
+    process.env.VAULT_OIDC_ROLE = 'agentd-secrets';
     process.env.VAULT_KV_MOUNT = 'secret';
     process.env.VAULT_WRAP_TTL = '300s';
     process.env.WRAPTOKEN_ENC_KEY = encKeyHex;

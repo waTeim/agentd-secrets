@@ -1,4 +1,4 @@
-# Task: Modify the agent-secretd broker to emulate `vault login -method=oidc` (Vault CLI-style localhost callback)
+# Task: Modify the agentd-secrets broker to emulate `vault login -method=oidc` (Vault CLI-style localhost callback)
 
 ## Context
 We have an existing Node.js broker service (built for Kubernetes) that uses Playwright to automate authentication. We previously considered OIDC callbacks to the broker service, but we are changing design: **emulate Vault CLI OIDC login**:
@@ -8,9 +8,9 @@ We have an existing Node.js broker service (built for Kubernetes) that uses Play
 
 Vault version is 1.21.2. Keycloak is 26.5.x and is configured with Duo via a Keycloak provider; the “push approve” happens inside Keycloak login.
 
-The Keycloak OIDC client exists: `agent-secretd`.
-The Keycloak user exists: `agent-secretd-approver`.
-Vault has OIDC auth enabled at some mount (default: `oidc/`) and a role (default: `agent-secretd`) allowing the redirect URI `http://localhost:8250/oidc/callback` (and any other required redirects we decide). If needed, document Vault role requirements but do not implement Vault config code in this change.
+The Keycloak OIDC client exists: `agentd-secrets`.
+The Keycloak user exists: `agentd-secrets-approver`.
+Vault has OIDC auth enabled at some mount (default: `oidc/`) and a role (default: `agentd-secrets`) allowing the redirect URI `http://localhost:8250/oidc/callback` (and any other required redirects we decide). If needed, document Vault role requirements but do not implement Vault config code in this change.
 
 ## Goal
 Implement a broker login flow that:
@@ -40,7 +40,7 @@ Implement a module/class (e.g., `src/auth/vaultOidcCliFlow.ts`) that performs:
 Call Vault endpoint to get auth URL (Vault OIDC auth method):
 - `POST /v1/auth/<mount>/oidc/auth_url` OR `GET` depending on Vault endpoint requirements.
 - Provide parameters including at least:
-  - `role`: Vault role name (e.g., `agent-secretd`)
+  - `role`: Vault role name (e.g., `agentd-secrets`)
   - `redirect_uri`: `http://localhost:8250/oidc/callback` (default)
   - `client_nonce`: random string (store to verify if returned)
   - optionally `state`: random string for correlation
@@ -56,7 +56,7 @@ Capture the incoming query parameters (usually includes `code` and `state`; Vaul
 **Step 3: Drive browser automation**
 Launch Playwright (Chromium) and open the `auth_url`.
 Automate Keycloak login:
-- Fill username/password for `agent-secretd-approver` (source from broker config/secret).
+- Fill username/password for `agentd-secrets-approver` (source from broker config/secret).
 - Duo push: wait for completion (poll UI state until redirect occurs).
 - The browser will redirect to `http://localhost:8250/oidc/callback?...`.
 The local listener catches the request and extracts query params. Once captured, close browser context.
@@ -93,14 +93,14 @@ Return `{wrap_token: "...", expires_in: ...}`.
 Add config fields (via env/config file or K8s secret/values—match repo conventions):
 - `VAULT_ADDR`
 - `VAULT_OIDC_MOUNT` (default `oidc`)
-- `VAULT_OIDC_ROLE` (default `agent-secretd`)
+- `VAULT_OIDC_ROLE` (default `agentd-secrets`)
 - `VAULT_KV_MOUNT` (default `secret`)
 - `VAULT_WRAP_TTL` (default `300s`)
 - `OIDC_LOCAL_LISTEN_HOST` (default `127.0.0.1`)
 - `OIDC_LOCAL_LISTEN_PORT` (default `8250`)
 - `OIDC_LOCAL_REDIRECT_URI` (default `http://localhost:8250/oidc/callback`)
 - Keycloak login creds for the broker user:
-  - `KEYCLOAK_USERNAME` (agent-secretd-approver)
+  - `KEYCLOAK_USERNAME` (agentd-secrets-approver)
   - `KEYCLOAK_PASSWORD`
 - Playwright headless and timeout tuning.
 

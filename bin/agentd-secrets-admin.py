@@ -1,10 +1,10 @@
 #!/usr/bin/env python3
 """
-agent-secretd admin — unified CLI for agent-secretd deployment tasks.
+agentd-secrets admin — unified CLI for agentd-secrets deployment tasks.
 
 Subcommands:
-    init            Query Vault and auto-populate agent-secretd-admin.yaml
-    configure       Set target image config; writes agent-secretd-admin.yaml + build-config.json
+    init            Query Vault and auto-populate agentd-secrets-admin.yaml
+    configure       Set target image config; writes agentd-secrets-admin.yaml + build-config.json
     create-secret   Create the Kubernetes Secret for Helm deployment
     vault-setup     Configure Vault OIDC auth against Keycloak
 
@@ -33,7 +33,7 @@ try:
 except ImportError:
     yaml = None
 
-CONFIG_FILE = "agent-secretd-admin.yaml"
+CONFIG_FILE = "agentd-secrets-admin.yaml"
 BUILD_CONFIG_FILE = "build-config.json"
 
 # Default OIDC callback settings (Vault CLI-style localhost listener)
@@ -294,7 +294,7 @@ def cmd_init(args: argparse.Namespace) -> int:
     if not client.is_authenticated():
         raise SystemExit("Vault authentication failed (check vault addr/token).")
 
-    print("=== agent-secretd admin — init ===")
+    print("=== agentd-secrets admin — init ===")
     print(f"  Vault: {vault_addr}")
 
     config_path = Path(args.config) if args.config else default_config_path()
@@ -342,7 +342,7 @@ def cmd_init(args: argparse.Namespace) -> int:
     else:
         print("  [not found]  oidc.client_id")
 
-    oidc_role = default_role or deep_get(config, "vault.oidc_role", "agent-secretd")
+    oidc_role = default_role or deep_get(config, "vault.oidc_role", "agentd-secrets")
     if default_role:
         print(f"  [discovered] vault.oidc_role = {default_role}")
     else:
@@ -417,7 +417,7 @@ def cmd_init(args: argparse.Namespace) -> int:
             if isinstance(pol, dict):
                 rules = pol.get("rules") or ""
             # Parse HCL to extract kv_mount and secret_prefix
-            # e.g. path "secret/data/agent-secretd/*"
+            # e.g. path "secret/data/agentd-secrets/*"
             m = re.search(r'path\s+"([^"]+)/data/([^/]+)/\*"', rules)
             if m:
                 kv_mount = m.group(1)
@@ -432,24 +432,24 @@ def cmd_init(args: argparse.Namespace) -> int:
     # Fill in defaults for anything not discovered
     _defaults = {
         "vault.oidc_mount": "oidc",
-        "vault.oidc_role": "agent-secretd",
-        "vault.policy_name": "agent-secretd-read",
+        "vault.oidc_role": "agentd-secrets",
+        "vault.policy_name": "agentd-secrets-read",
         "vault.allowed_redirect_uris": DEFAULT_OIDC_REDIRECT_URI,
         "vault.user_claim": "preferred_username",
         "vault.bound_claim_key": "preferred_username",
-        "vault.bound_claim_value": "agent-secretd-approver",
+        "vault.bound_claim_value": "agentd-secrets-approver",
         "vault.token_ttl": "15m",
         "vault.kv_mount": "secret",
-        "vault.secret_prefix": "agent-secretd",
+        "vault.secret_prefix": "agentd-secrets",
         "vault.wrap_ttl": "300s",
-        "oidc.client_id": "agent-secretd",
+        "oidc.client_id": "agentd-secrets",
         "oidc.client_password": "",
-        "oidc.username": "agent-secretd-approver",
+        "oidc.username": "agentd-secrets-approver",
         "oidc.callback_listen_host": DEFAULT_OIDC_LISTEN_HOST,
         "oidc.callback_listen_port": DEFAULT_OIDC_LISTEN_PORT,
         "oidc.callback_redirect_uri": DEFAULT_OIDC_REDIRECT_URI,
         "kubernetes.namespace": "default",
-        "kubernetes.secret_name": "agent-secretd-secrets",
+        "kubernetes.secret_name": "agentd-secrets-secrets",
         "playwright.headless": True,
         "playwright.browser": "chromium",
         "playwright.login_timeout": "2m",
@@ -476,7 +476,7 @@ def cmd_configure(args: argparse.Namespace) -> int:
     config = load_config(config_path)
     saved_target = deep_get(config, "target", {}) or {}
 
-    print("=== agent-secretd admin — configure ===")
+    print("=== agentd-secrets admin — configure ===")
     print("\n=== Target Image ===")
 
     registry = args.target_registry or get_env_or_prompt(
@@ -489,7 +489,7 @@ def cmd_configure(args: argparse.Namespace) -> int:
     image = args.target_image or get_env_or_prompt(
         "TARGET_IMAGE",
         "Image name",
-        default=saved_target.get("image", "agent-secretd"),
+        default=saved_target.get("image", "agentd-secrets"),
     )
 
     tag = args.target_tag or get_env_or_prompt(
@@ -544,7 +544,7 @@ def build_secret(name: str, namespace: str, data: dict[str, str]):
         metadata=client.V1ObjectMeta(
             name=name,
             namespace=namespace,
-            labels={"app.kubernetes.io/managed-by": "agent-secretd-admin"},
+            labels={"app.kubernetes.io/managed-by": "agentd-secrets-admin"},
         ),
         type="Opaque",
         data={
@@ -554,7 +554,7 @@ def build_secret(name: str, namespace: str, data: dict[str, str]):
 
 
 def cmd_create_secret(args: argparse.Namespace) -> int:
-    """Create the Kubernetes Secret for agent-secretd Helm deployment.
+    """Create the Kubernetes Secret for agentd-secrets Helm deployment.
 
     Secret keys (aligned with Helm deployment template):
         KEYCLOAK_CLIENT_SECRET  – Keycloak confidential-client secret
@@ -575,7 +575,7 @@ def cmd_create_secret(args: argparse.Namespace) -> int:
         k8s_config.load_kube_config()
 
     # Resolve values: CLI flags > config file > defaults
-    secret_name = args.name or deep_get(config, "kubernetes.secret_name", "agent-secretd-secrets")
+    secret_name = args.name or deep_get(config, "kubernetes.secret_name", "agentd-secrets-secrets")
 
     if args.namespace:
         namespace = args.namespace
@@ -591,10 +591,10 @@ def cmd_create_secret(args: argparse.Namespace) -> int:
                 namespace = "default"
 
     keycloak_username = args.keycloak_username or deep_get(
-        config, "oidc.username", "agent-secretd-approver",
+        config, "oidc.username", "agentd-secrets-approver",
     )
 
-    print("=== agent-secretd admin — create-secret ===")
+    print("=== agentd-secrets admin — create-secret ===")
     print(f"  Secret:    {secret_name}")
     print(f"  Namespace: {namespace}")
 
@@ -816,8 +816,8 @@ def cmd_vault_setup(args: argparse.Namespace) -> int:
     vault_addr = pick(args.vault_addr, "vault.addr")
     vault_token = args.vault_token  # always from CLI
     oidc_mount = pick(args.oidc_mount, "vault.oidc_mount", "oidc")
-    oidc_role = pick(args.oidc_role, "vault.oidc_role", "agent-secretd")
-    vault_policy_name = pick(args.vault_policy_name, "vault.policy_name", "agent-secretd-read")
+    oidc_role = pick(args.oidc_role, "vault.oidc_role", "agentd-secrets")
+    vault_policy_name = pick(args.vault_policy_name, "vault.policy_name", "agentd-secrets-read")
 
     keycloak_discovery_url = pick(args.keycloak_discovery_url, "oidc.issuer_url")
     keycloak_client_id = pick(args.keycloak_client_id, "oidc.client_id")
@@ -831,12 +831,12 @@ def cmd_vault_setup(args: argparse.Namespace) -> int:
 
     user_claim = pick(args.user_claim, "vault.user_claim", "preferred_username")
     bound_claim_key = pick(args.bound_claim_key, "vault.bound_claim_key", "preferred_username")
-    bound_claim_value = pick(args.bound_claim_value, "vault.bound_claim_value", "agent-secretd-approver")
+    bound_claim_value = pick(args.bound_claim_value, "vault.bound_claim_value", "agentd-secrets-approver")
 
     token_ttl = pick(args.token_ttl, "vault.token_ttl", "15m")
 
     kv_mount = pick(args.kv_mount, "vault.kv_mount", "secret")
-    secret_prefix = pick(args.secret_prefix, "vault.secret_prefix", "agent-secretd")
+    secret_prefix = pick(args.secret_prefix, "vault.secret_prefix", "agentd-secrets")
 
     # Validate required fields
     missing = []
@@ -865,7 +865,7 @@ def cmd_vault_setup(args: argparse.Namespace) -> int:
     if not vc.is_authenticated():
         raise SystemExit("Vault authentication failed (check vault addr/token).")
 
-    print("=== agent-secretd admin — vault-setup ===")
+    print("=== agentd-secrets admin — vault-setup ===")
     print(f"[info] connected to Vault at {vault_addr}")
 
     ensure_oidc_auth_enabled(vc, mount_point)
@@ -1386,17 +1386,17 @@ def cmd_sync(args: argparse.Namespace) -> int:
     token_ttl = vault_cfg.get("token_ttl", "15m")
     kv_mount = vault_cfg.get("kv_mount", "secret")
     kv_version = vault_cfg.get("kv_version", 2)
-    secret_prefix = vault_cfg.get("secret_prefix", "agent-secretd")
+    secret_prefix = vault_cfg.get("secret_prefix", "agentd-secrets")
 
     policies_cfg = vault_cfg.get("policies", {})
-    shared_policy_name = policies_cfg.get("shared_policy_name", "agent-secretd-shared-read")
-    bot_policy_prefix = policies_cfg.get("bot_policy_prefix", "agent-secretd-bot-")
+    shared_policy_name = policies_cfg.get("shared_policy_name", "agentd-secrets-shared-read")
+    bot_policy_prefix = policies_cfg.get("bot_policy_prefix", "agentd-secrets-bot-")
 
     issuer_url = oidc_cfg.get("issuer_url", "")
     kc_client_id = oidc_cfg.get("client_id", "")
 
     k8s_namespace = k8s_cfg.get("namespace", "default")
-    k8s_secret_name = k8s_cfg.get("secret_name", "agent-secretd-secrets")
+    k8s_secret_name = k8s_cfg.get("secret_name", "agentd-secrets-secrets")
 
     if not vault_addr:
         raise SystemExit("vault.addr is required in config")
@@ -1404,7 +1404,7 @@ def cmd_sync(args: argparse.Namespace) -> int:
         raise SystemExit("--vault-token is required")
 
     mode = "check" if args.check else ("apply" if args.apply else "plan")
-    print(f"=== agent-secretd admin — sync ({mode}) ===")
+    print(f"=== agentd-secrets admin — sync ({mode}) ===")
     print(f"  Vault: {vault_addr}")
     if bots:
         print(f"  Bots:  {', '.join(b['name'] for b in bots)}")
@@ -1550,8 +1550,8 @@ def cmd_sync(args: argparse.Namespace) -> int:
 
 def build_parser() -> argparse.ArgumentParser:
     parser = argparse.ArgumentParser(
-        prog="agent-secretd-admin",
-        description="Unified admin CLI for agent-secretd deployment tasks.",
+        prog="agentd-secrets-admin",
+        description="Unified admin CLI for agentd-secrets deployment tasks.",
     )
     parser.add_argument(
         "--config", "-c",
@@ -1581,7 +1581,7 @@ def build_parser() -> argparse.ArgumentParser:
     # -- create-secret -------------------------------------------------------
     p_sec = subs.add_parser("create-secret", help="Create K8s Secret for Helm deployment")
     p_sec.add_argument("--name", default=None,
-                       help="Secret name (default: from config or 'agent-secretd-secrets')")
+                       help="Secret name (default: from config or 'agentd-secrets-secrets')")
     p_sec.add_argument("--namespace", "-n", default=None,
                        help="Kubernetes namespace (default: from config or kubeconfig context)")
     p_sec.add_argument("--keycloak-client-secret", required=True,
@@ -1592,7 +1592,7 @@ def build_parser() -> argparse.ArgumentParser:
     enc_grp.add_argument("--generate-enc-key", action="store_true",
                          help="Auto-generate WRAPTOKEN_ENC_KEY")
     p_sec.add_argument("--keycloak-username", default=None,
-                       help="Keycloak headless login user (default: from config or 'agent-secretd-approver')")
+                       help="Keycloak headless login user (default: from config or 'agentd-secrets-approver')")
     p_sec.add_argument("--keycloak-password", required=True,
                        help="Password for the headless login user")
     p_sec.add_argument("--force", action="store_true",

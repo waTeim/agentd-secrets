@@ -1,6 +1,6 @@
-# Prompt: Rebuild agent-secretd broker as Node.js + Playwright (Keycloak IdP, Duo in Browser flow)
+# Prompt: Rebuild agentd-secrets broker as Node.js + Playwright (Keycloak IdP, Duo in Browser flow)
 
-You are a senior security engineer and Node.js backend developer. Re-implement the existing “agent-secretd” secret broker as a wholly Node.js service that uses a headless browser (Playwright) to obtain a Keycloak user token via OIDC Authorization Code + PKCE, rather than UMA/RPT polling. Maintain compatibility with the existing Helm chart/env/secret/config expectations described below.
+You are a senior security engineer and Node.js backend developer. Re-implement the existing “agentd-secrets” secret broker as a wholly Node.js service that uses a headless browser (Playwright) to obtain a Keycloak user token via OIDC Authorization Code + PKCE, rather than UMA/RPT polling. Maintain compatibility with the existing Helm chart/env/secret/config expectations described below.
 
 ## Repo layout assumption (IMPORTANT)
 
@@ -12,13 +12,13 @@ You are a senior security engineer and Node.js backend developer. Re-implement t
 
 ## Context: existing broker (for compatibility)
 
-The current agent-secretd broker sits between an automated client (bot) and HashiCorp Vault. It enforces “human-in-the-loop approval” by relying on Keycloak as the authorization gate. It never stores actual secrets; it only returns Vault response-wrapping tokens, encrypted at rest with AES-256-GCM using a 32-byte key in `WRAPTOKEN_ENC_KEY` (hex). It exposes:
+The current agentd-secrets broker sits between an automated client (bot) and HashiCorp Vault. It enforces “human-in-the-loop approval” by relying on Keycloak as the authorization gate. It never stores actual secrets; it only returns Vault response-wrapping tokens, encrypted at rest with AES-256-GCM using a 32-byte key in `WRAPTOKEN_ENC_KEY` (hex). It exposes:
 
 - `POST /v1/requests` → returns `{request_id, status:PENDING_APPROVAL}`
 - `GET /v1/requests/{id}` → returns status; once approved returns `{wrap_token}`
 - `/healthz`, `/readyz` (ready checks Keycloak discovery reachable and Vault sys/health)
 
-Requests are ephemeral (in-memory). Worker pool handles async processing. JWT middleware validates bot JWTs against Keycloak JWKS. Helm chart mounts a service registry YAML at `/etc/agent-secretd/config.yaml`, injects Keycloak and Vault env vars, and uses a Secret with `KEYCLOAK_CLIENT_SECRET` and `WRAPTOKEN_ENC_KEY`. Keep these behaviors/knobs.
+Requests are ephemeral (in-memory). Worker pool handles async processing. JWT middleware validates bot JWTs against Keycloak JWKS. Helm chart mounts a service registry YAML at `/etc/agentd-secrets/config.yaml`, injects Keycloak and Vault env vars, and uses a Secret with `KEYCLOAK_CLIENT_SECRET` and `WRAPTOKEN_ENC_KEY`. Keep these behaviors/knobs.
 
 ## New behavior to implement
 
@@ -53,7 +53,7 @@ Read env vars compatible with the existing chart:
 - `WRAPTOKEN_ENC_KEY` (hex)
 - `BROKER_LISTEN_ADDR` (default `:8080`)
 
-Read service registry YAML from `/etc/agent-secretd/config.yaml` (as mounted by the Helm chart).
+Read service registry YAML from `/etc/agentd-secrets/config.yaml` (as mounted by the Helm chart).
 
 ### Add new env vars for headless auth
 
@@ -141,4 +141,4 @@ Output a repo with:
 - `README.md` with: how it works, security notes, config reference, operational notes (single replica, sticky sessions if scaling)
 - `./helm/CHANGES.md` describing minimal Helm edits you made (if any)
 
-Implement fully—no TODO placeholders. Keep the external contract (endpoints, env var names, service registry path) compatible with the existing agent-secretd deployment described above, and keep the Helm chart in `./helm/` as the deployment contract.
+Implement fully—no TODO placeholders. Keep the external contract (endpoints, env var names, service registry path) compatible with the existing agentd-secrets deployment described above, and keep the Helm chart in `./helm/` as the deployment contract.

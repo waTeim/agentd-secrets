@@ -7,7 +7,7 @@ const logger = winston.createLogger({
     winston.format.errors({ stack: true }),
     winston.format.json(),
   ),
-  defaultMeta: { service: 'agent-secretd' },
+  defaultMeta: { service: 'agentd-secrets' },
   transports: [new winston.transports.Console()],
 });
 

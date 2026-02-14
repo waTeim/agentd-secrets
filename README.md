@@ -1,11 +1,11 @@
-# agent-secretd — Secret Access Broker
+# agentd-secrets — Secret Access Broker
 
 A Node.js/TypeScript service that brokers access to HashiCorp Vault secrets with human-in-the-loop approval via Keycloak + Duo MFA.
 
 ## How It Works
 
 ```
-Bot (CI/CD)                  agent-secretd Broker                   Vault                 Keycloak + Duo
+Bot (CI/CD)                  agentd-secrets Broker                   Vault                 Keycloak + Duo
     |                             |                            |                         |
     |-- POST /v1/requests ------->|                            |                         |
     |<-- 202 {request_id} --------|                            |                         |
@@ -113,7 +113,7 @@ Readiness probe. Returns `200` if Keycloak OIDC discovery and Vault `sys/health`
 | `KEYCLOAK_AUDIENCE` | No | `""` | Expected JWT audience claim |
 | `VAULT_ADDR` | Yes | -- | Vault server address |
 | `VAULT_OIDC_MOUNT` | No | `oidc` | Vault OIDC auth method mount path |
-| `VAULT_OIDC_ROLE` | No | `agent-secretd` | Vault OIDC auth role |
+| `VAULT_OIDC_ROLE` | No | `agentd-secrets` | Vault OIDC auth role |
 | `VAULT_KV_MOUNT` | No | `secret` | Vault KV v2 secrets engine mount |
 | `VAULT_WRAP_TTL` | No | `300s` | Default Vault response wrap TTL |
 | `OIDC_LOCAL_LISTEN_HOST` | No | `127.0.0.1` | Callback listener bind address |
@@ -121,7 +121,7 @@ Readiness probe. Returns `200` if Keycloak OIDC discovery and Vault `sys/health`
 | `OIDC_LOCAL_REDIRECT_URI` | No | `http://localhost:8250/oidc/callback` | OIDC redirect URI |
 | `WRAPTOKEN_ENC_KEY` | Yes | -- | 64 hex chars (32 bytes) for AES-256-GCM encryption |
 | `BROKER_LISTEN_ADDR` | No | `:8080` | Listen address |
-| `BROKER_CONFIG_PATH` | No | `/etc/agent-secretd/config.yaml` | Path to service registry |
+| `BROKER_CONFIG_PATH` | No | `/etc/agentd-secrets/config.yaml` | Path to service registry |
 | `KEYCLOAK_USERNAME` | Yes | -- | Keycloak user for headless login |
 | `KEYCLOAK_PASSWORD` | Yes | -- | Password for the approver user |
 | `KC_LOGIN_TIMEOUT` | No | `2m` | Timeout for Keycloak login page |
@@ -132,7 +132,7 @@ Readiness probe. Returns `200` if Keycloak OIDC discovery and Vault `sys/health`
 
 ### Service Registry (`config.yaml`)
 
-Mounted at `/etc/agent-secretd/config.yaml` via ConfigMap:
+Mounted at `/etc/agentd-secrets/config.yaml` via ConfigMap:
 
 ```yaml
 services:
@@ -158,18 +158,18 @@ The `authz` block is retained for backward compatibility but is not used for gat
 The Vault OIDC auth method must be enabled and configured with Keycloak as the identity provider. The Vault role must include `http://localhost:8250/oidc/callback` in its `allowed_redirect_uris`:
 
 ```bash
-vault write auth/oidc/role/agent-secretd \
-  bound_audiences="agent-secretd" \
+vault write auth/oidc/role/agentd-secrets \
+  bound_audiences="agentd-secrets" \
   allowed_redirect_uris="http://localhost:8250/oidc/callback" \
   user_claim="preferred_username" \
   role_type="oidc" \
-  policies="agent-secretd-read" \
+  policies="agentd-secrets-read" \
   token_ttl="15m"
 ```
 
 ### Keycloak Client
 
-The Keycloak OIDC client (`agent-secretd` or whatever `KEYCLOAK_CLIENT_ID` is set to) must have `http://localhost:8250/oidc/callback` as a valid redirect URI. Since the callback is on localhost inside the pod, no public ingress is needed.
+The Keycloak OIDC client (`agentd-secrets` or whatever `KEYCLOAK_CLIENT_ID` is set to) must have `http://localhost:8250/oidc/callback` as a valid redirect URI. Since the callback is on localhost inside the pod, no public ingress is needed.
 
 ### Vault KV Policy
 
@@ -207,28 +207,28 @@ The broker stores a real Keycloak user's password (`KEYCLOAK_PASSWORD`) in a Kub
 
 ## Admin CLI
 
-The `bin/agent-secretd-admin.py` script provides a unified CLI for setup and deployment:
+The `bin/agentd-secrets-admin.py` script provides a unified CLI for setup and deployment:
 
 ```bash
-# Discover Vault config and write agent-secretd-admin.yaml
-bin/agent-secretd-admin.py init --vault-addr https://vault.example.com --vault-token hvs.xxx
+# Discover Vault config and write agentd-secrets-admin.yaml
+bin/agentd-secrets-admin.py init --vault-addr https://vault.example.com --vault-token hvs.xxx
 
 # Configure build settings (registry, image, tag)
-bin/agent-secretd-admin.py configure
+bin/agentd-secrets-admin.py configure
 
 # Create Kubernetes secret
-bin/agent-secretd-admin.py create-secret \
+bin/agentd-secrets-admin.py create-secret \
   --keycloak-client-secret '...' \
   --keycloak-password '...' \
   --generate-enc-key
 
 # Configure Vault OIDC auth
-bin/agent-secretd-admin.py vault-setup \
+bin/agentd-secrets-admin.py vault-setup \
   --vault-token hvs.xxx \
   --keycloak-client-secret '...'
 ```
 
-See `bin/agent-secretd-admin.py --help` for full usage.
+See `bin/agentd-secrets-admin.py --help` for full usage.
 
 ### Multi-Bot Sync
 
@@ -236,16 +236,16 @@ The `sync` subcommand reads a declarative YAML config and ensures Vault policies
 
 ```bash
 # Show planned changes (default)
-bin/agent-secretd-admin.py sync --vault-token $VAULT_TOKEN
+bin/agentd-secrets-admin.py sync --vault-token $VAULT_TOKEN
 
 # Read-only check, exit code 2 if drift detected
-bin/agent-secretd-admin.py sync --vault-token $VAULT_TOKEN --check
+bin/agentd-secrets-admin.py sync --vault-token $VAULT_TOKEN --check
 
 # Apply changes
-bin/agent-secretd-admin.py sync --vault-token $VAULT_TOKEN --apply
+bin/agentd-secrets-admin.py sync --vault-token $VAULT_TOKEN --apply
 
 # With OIDC client secret (needed for Vault OIDC config + IdP admin checks)
-bin/agent-secretd-admin.py sync --vault-token $VAULT_TOKEN --oidc-client-secret $OIDC_CLIENT_SECRET --apply
+bin/agentd-secrets-admin.py sync --vault-token $VAULT_TOKEN --oidc-client-secret $OIDC_CLIENT_SECRET --apply
 ```
 
 #### Example Config (2 bots)
@@ -261,15 +261,15 @@ vault:
   token_ttl: 15m
   kv_mount: projects
   kv_version: 2
-  secret_prefix: agent-secretd
+  secret_prefix: agentd-secrets
   wrap_ttl: 300s
   policies:
-    shared_policy_name: agent-secretd-shared-read
-    bot_policy_prefix: agent-secretd-bot-
+    shared_policy_name: agentd-secrets-shared-read
+    bot_policy_prefix: agentd-secrets-bot-
 
 oidc:
   issuer_url: https://keycloak.example.com/realms/REALM
-  client_id: agent-secretd
+  client_id: agentd-secrets
   client_password: ""            # OIDC client secret (or pass via --oidc-client-secret / K8s secret)
   username: openclaw-approver    # default headless login user
   callback_listen_host: 127.0.0.1
@@ -285,32 +285,32 @@ bots:
 
 kubernetes:
   namespace: default
-  secret_name: agent-secretd-secrets
+  secret_name: agentd-secrets-secrets
 ```
 
 #### Per-Bot Isolation
 
 The sync subcommand enforces strict secret isolation between bots using Vault's policy system:
 
-**Secret layout** (KV v2 at `projects/`, prefix `agent-secretd`):
+**Secret layout** (KV v2 at `projects/`, prefix `agentd-secrets`):
 
 | Path | Access | Capabilities |
 |---|---|---|
-| `projects/data/agent-secretd/shared/*` | All bots | read |
-| `projects/metadata/agent-secretd/shared/*` | All bots | list |
-| `projects/data/agent-secretd/bots/<bot>/*` | Only that bot | read |
-| `projects/metadata/agent-secretd/bots/<bot>/*` | Only that bot | list |
+| `projects/data/agentd-secrets/shared/*` | All bots | read |
+| `projects/metadata/agentd-secrets/shared/*` | All bots | list |
+| `projects/data/agentd-secrets/bots/<bot>/*` | Only that bot | read |
+| `projects/metadata/agentd-secrets/bots/<bot>/*` | Only that bot | list |
 
 **Policies created:**
 
-- `agent-secretd-shared-read` — read/list the shared subtree only
-- `agent-secretd-bot-<name>` — read/list the bot's own subtree AND the shared subtree
+- `agentd-secrets-shared-read` — read/list the shared subtree only
+- `agentd-secrets-bot-<name>` — read/list the bot's own subtree AND the shared subtree
 
 **Why this prevents cross-bot leakage:**
 
 1. Each bot authenticates via its own OIDC role, which binds to a unique Keycloak user (`<bot>-approver`).
-2. Each OIDC role attaches only the bot's own policy (`agent-secretd-bot-<name>`).
-3. Bot policies use exact path prefixes — `agent-secretd-bot-openclaw` grants access to `bots/openclaw/*` but NOT `bots/roadrunner/*`.
+2. Each OIDC role attaches only the bot's own policy (`agentd-secrets-bot-<name>`).
+3. Bot policies use exact path prefixes — `agentd-secrets-bot-openclaw` grants access to `bots/openclaw/*` but NOT `bots/roadrunner/*`.
 4. The shared policy is embedded in each bot policy, so all bots can read shared secrets without a separate role.
 5. Vault denies any path not explicitly granted by the attached policies.
 
@@ -363,7 +363,7 @@ E2E tests require a real Keycloak instance with Duo configured:
 ```bash
 export E2E_KEYCLOAK_BASE_URL=https://keycloak.example.com
 export E2E_KEYCLOAK_REALM=myrealm
-export E2E_KEYCLOAK_CLIENT_ID=agent-secretd
+export E2E_KEYCLOAK_CLIENT_ID=agentd-secrets
 export E2E_KEYCLOAK_CLIENT_SECRET=...
 export E2E_APPROVER_USERNAME=approver
 export E2E_APPROVER_PASSWORD=...
@@ -373,25 +373,25 @@ npm run test:e2e
 ## Docker
 
 ```bash
-docker build -t agent-secretd:latest .
+docker build -t agentd-secrets:latest .
 ```
 
 ## Deployment (Helm)
 
 ```bash
-# Create the secret first (or use agent-secretd-admin.py create-secret)
-bin/agent-secretd-admin.py create-secret \
+# Create the secret first (or use agentd-secrets-admin.py create-secret)
+bin/agentd-secrets-admin.py create-secret \
   --keycloak-client-secret '...' \
   --keycloak-password '...' \
   --generate-enc-key
 
 # Install
-helm install agent-secretd ./chart \
+helm install agentd-secrets ./chart \
   --set keycloak.issuerURL=https://keycloak.example.com/realms/myrealm \
-  --set keycloak.clientID=agent-secretd \
+  --set keycloak.clientID=agentd-secrets \
   --set vault.addr=https://vault.example.com \
-  --set vault.oidcRole=agent-secretd \
-  --set existingSecret=agent-secretd-secrets
+  --set vault.oidcRole=agentd-secrets \
+  --set existingSecret=agentd-secrets-secrets
 ```
 
 ## Troubleshooting

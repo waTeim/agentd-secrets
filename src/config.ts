@@ -119,7 +119,7 @@ export function loadConfig(): Config {
     throw new Error('WRAPTOKEN_ENC_KEY must be exactly 64 hex characters (32 bytes)');
   }
 
-  const configPath = process.env.BROKER_CONFIG_PATH || '/etc/agent-secretd/config.yaml';
+  const configPath = process.env.BROKER_CONFIG_PATH || '/etc/agentd-secrets/config.yaml';
 
   const listenAddr = process.env.BROKER_LISTEN_ADDR || ':8080';
   const portMatch = listenAddr.match(/:(\d+)$/);
@@ -138,7 +138,7 @@ export function loadConfig(): Config {
     vault: {
       addr: requireEnv('VAULT_ADDR'),
       oidcMount: process.env.VAULT_OIDC_MOUNT || 'oidc',
-      oidcRole: process.env.VAULT_OIDC_ROLE || 'agent-secretd',
+      oidcRole: process.env.VAULT_OIDC_ROLE || 'agentd-secrets',
       kvMount: process.env.VAULT_KV_MOUNT || 'secret',
       wrapTTL: process.env.VAULT_WRAP_TTL || '300s',
     },

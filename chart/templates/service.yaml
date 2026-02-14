@@ -1,9 +1,9 @@
 apiVersion: v1
 kind: Service
 metadata:
-  name: {{ include "agent-secretd.fullname" . }}
+  name: {{ include "agentd-secrets.fullname" . }}
   labels:
-    {{- include "agent-secretd.labels" . | nindent 4 }}
+    {{- include "agentd-secrets.labels" . | nindent 4 }}
 spec:
   type: {{ .Values.service.type }}
   ports:
@@ -12,4 +12,4 @@ spec:
       protocol: TCP
       name: http
   selector:
-    {{- include "agent-secretd.selectorLabels" . | nindent 4 }}
+    {{- include "agentd-secrets.selectorLabels" . | nindent 4 }}

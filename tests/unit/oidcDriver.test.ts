@@ -36,12 +36,12 @@ describe('OIDC Driver', () => {
 
     test('builds correct authorization URL', () => {
       const pkce = generatePKCE();
-      const url = buildAuthURL(discovery, 'agent-secretd', 'http://localhost:8080/oidc/callback', pkce);
+      const url = buildAuthURL(discovery, 'agentd-secrets', 'http://localhost:8080/oidc/callback', pkce);
 
       const parsed = new URL(url);
       expect(parsed.origin + parsed.pathname).toBe(discovery.authorization_endpoint);
       expect(parsed.searchParams.get('response_type')).toBe('code');
-      expect(parsed.searchParams.get('client_id')).toBe('agent-secretd');
+      expect(parsed.searchParams.get('client_id')).toBe('agentd-secrets');
       expect(parsed.searchParams.get('redirect_uri')).toBe('http://localhost:8080/oidc/callback');
       expect(parsed.searchParams.get('scope')).toBe('openid');
       expect(parsed.searchParams.get('state')).toBe(pkce.state);

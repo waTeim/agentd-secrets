@@ -2,14 +2,14 @@
 apiVersion: autoscaling/v2
 kind: HorizontalPodAutoscaler
 metadata:
-  name: {{ include "agent-secretd.fullname" . }}
+  name: {{ include "agentd-secrets.fullname" . }}
   labels:
-    {{- include "agent-secretd.labels" . | nindent 4 }}
+    {{- include "agentd-secrets.labels" . | nindent 4 }}
 spec:
   scaleTargetRef:
     apiVersion: apps/v1
     kind: Deployment
-    name: {{ include "agent-secretd.fullname" . }}
+    name: {{ include "agentd-secrets.fullname" . }}
   minReplicas: {{ .Values.autoscaling.minReplicas }}
   maxReplicas: {{ .Values.autoscaling.maxReplicas }}
   metrics:

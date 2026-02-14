@@ -5,4 +5,4 @@ coverage/
 .env
 .env.*
 build-config.json
-agent-secretd-admin.yaml
+agentd-secrets-admin.yaml

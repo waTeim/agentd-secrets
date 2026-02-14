@@ -1,16 +1,16 @@
 apiVersion: apps/v1
 kind: Deployment
 metadata:
-  name: {{ include "agent-secretd.fullname" . }}
+  name: {{ include "agentd-secrets.fullname" . }}
   labels:
-    {{- include "agent-secretd.labels" . | nindent 4 }}
+    {{- include "agentd-secrets.labels" . | nindent 4 }}
 spec:
   {{- if not .Values.autoscaling.enabled }}
   replicas: {{ .Values.replicaCount }}
   {{- end }}
   selector:
     matchLabels:
-      {{- include "agent-secretd.selectorLabels" . | nindent 6 }}
+      {{- include "agentd-secrets.selectorLabels" . | nindent 6 }}
   template:
     metadata:
       annotations:
@@ -19,13 +19,13 @@ spec:
         {{- toYaml . | nindent 8 }}
       {{- end }}
       labels:
-        {{- include "agent-secretd.selectorLabels" . | nindent 8 }}
+        {{- include "agentd-secrets.selectorLabels" . | nindent 8 }}
     spec:
       {{- with .Values.imagePullSecrets }}
       imagePullSecrets:
         {{- toYaml . | nindent 8 }}
       {{- end }}
-      serviceAccountName: {{ include "agent-secretd.serviceAccountName" . }}
+      serviceAccountName: {{ include "agentd-secrets.serviceAccountName" . }}
       securityContext:
         {{- toYaml .Values.podSecurityContext | nindent 8 }}
       containers:
@@ -42,7 +42,7 @@ spec:
             - name: BROKER_LISTEN_ADDR
               value: ":8080"
             - name: BROKER_CONFIG_PATH
-              value: "/etc/agent-secretd/config.yaml"
+              value: "/etc/agentd-secrets/config.yaml"
             # -- Keycloak
             - name: KEYCLOAK_ISSUER_URL
               value: {{ .Values.keycloak.issuerURL | quote }}
@@ -55,7 +55,7 @@ spec:
             - name: KEYCLOAK_CLIENT_SECRET
               valueFrom:
                 secretKeyRef:
-                  name: {{ .Values.existingSecret | default (printf "%s-secrets" (include "agent-secretd.fullname" .)) }}
+                  name: {{ .Values.existingSecret | default (printf "%s-secrets" (include "agentd-secrets.fullname" .)) }}
                   key: KEYCLOAK_CLIENT_SECRET
             # -- Vault (OIDC auth — Vault CLI-style localhost flow)
             - name: VAULT_ADDR
@@ -79,18 +79,18 @@ spec:
             - name: WRAPTOKEN_ENC_KEY
               valueFrom:
                 secretKeyRef:
-                  name: {{ .Values.existingSecret | default (printf "%s-secrets" (include "agent-secretd.fullname" .)) }}
+                  name: {{ .Values.existingSecret | default (printf "%s-secrets" (include "agentd-secrets.fullname" .)) }}
                   key: WRAPTOKEN_ENC_KEY
             # -- Headless OIDC login credentials
             - name: KEYCLOAK_USERNAME
               valueFrom:
                 secretKeyRef:
-                  name: {{ .Values.existingSecret | default (printf "%s-secrets" (include "agent-secretd.fullname" .)) }}
+                  name: {{ .Values.existingSecret | default (printf "%s-secrets" (include "agentd-secrets.fullname" .)) }}
                   key: KEYCLOAK_USERNAME
             - name: KEYCLOAK_PASSWORD
               valueFrom:
                 secretKeyRef:
-                  name: {{ .Values.existingSecret | default (printf "%s-secrets" (include "agent-secretd.fullname" .)) }}
+                  name: {{ .Values.existingSecret | default (printf "%s-secrets" (include "agentd-secrets.fullname" .)) }}
                   key: KEYCLOAK_PASSWORD
             - name: KC_LOGIN_TIMEOUT
               value: {{ .Values.login.loginTimeout | quote }}
@@ -102,7 +102,7 @@ spec:
               value: {{ .Values.playwright.browser | quote }}
           volumeMounts:
             - name: config
-              mountPath: /etc/agent-secretd
+              mountPath: /etc/agentd-secrets
               readOnly: true
             - name: tmp
               mountPath: /tmp
@@ -123,7 +123,7 @@ spec:
       volumes:
         - name: config
           configMap:
-            name: {{ include "agent-secretd.fullname" . }}-config
+            name: {{ include "agentd-secrets.fullname" . }}-config
         - name: tmp
           emptyDir:
             sizeLimit: 500Mi
