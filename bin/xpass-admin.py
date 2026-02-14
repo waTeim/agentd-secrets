@@ -459,11 +459,6 @@ def cmd_init(args: argparse.Namespace) -> int:
         if deep_get(config, key) is None:
             deep_set(config, key, default_val)
 
-    if "bots" not in config:
-        config["bots"] = [
-            {"name": "EXAMPLE", "approver_username": "EXAMPLE-approver"},
-        ]
-
     save_config(config, config_path)
     print("\n[done] init complete.")
     print("\nNOTE: The Vault OIDC role and Keycloak client must both allow")
@@ -975,9 +970,17 @@ def check_kv_mount(client, kv_mount: str, kv_version: int) -> PlanItem:
 
     key = f"{kv_mount}/"
     if key not in mounts:
+        def _apply():
+            client.sys.enable_secrets_engine(
+                backend_type="kv",
+                path=kv_mount,
+                options={"version": str(kv_version)},
+            )
+
         return PlanItem(
             "kv_mount", kv_mount, "missing",
-            f"KV mount '{kv_mount}' not found. Create it manually before running sync.",
+            f"KV v{kv_version} mount '{kv_mount}' will be created",
+            _apply,
         )
 
     mount_info = mounts[key] or {}
@@ -1021,7 +1024,7 @@ def check_oidc_auth_mount(client, oidc_mount: str) -> PlanItem:
     def _apply():
         client.sys.enable_auth_method(method_type="oidc", path=oidc_mount)
 
-    return PlanItem("oidc_mount", oidc_mount, "missing", "OIDC auth mount not found", _apply)
+    return PlanItem("oidc_mount", oidc_mount, "missing", "OIDC auth mount will be created", _apply)
 
 
 def check_oidc_config(
@@ -1052,7 +1055,7 @@ def check_oidc_config(
 
     return PlanItem(
         "oidc_config", f"auth/{oidc_mount}/config", status,
-        "; ".join(diffs) if diffs else "not configured",
+        "\n".join(diffs) if diffs else "config will be created",
         _apply,
     )
 
@@ -1073,7 +1076,7 @@ def check_policy(client, policy_name: str, expected_hcl: str) -> PlanItem:
         return PlanItem("policy", policy_name, "ok")
 
     status = "drift" if current_hcl.strip() else "missing"
-    diff = "policy HCL differs" if current_hcl.strip() else "policy does not exist"
+    diff = "policy HCL will be updated" if current_hcl.strip() else "policy will be created"
 
     def _apply():
         client.sys.create_or_update_policy(name=policy_name, policy=expected_hcl)
@@ -1126,7 +1129,7 @@ def check_oidc_role(
 
     return PlanItem(
         "oidc_role", role_name, status,
-        "; ".join(diffs) if diffs else "role does not exist",
+        "\n".join(diffs) if diffs else "role will be created",
         _apply,
     )
 
@@ -1317,13 +1320,22 @@ def read_k8s_secret(namespace: str, secret_name: str) -> Dict[str, str]:
 
 def print_plan(plan_items: List[PlanItem]) -> None:
     """Print a human-readable plan summary."""
-    status_symbols = {"ok": "[ok]", "drift": "[drift]", "missing": "[missing]", "error": "[ERROR]"}
+    status_symbols = {
+        "ok": "[ok]", "drift": "[drift]", "missing": "[missing]",
+        "error": "[ERROR]", "info": "[info]",
+    }
     for item in plan_items:
         sym = status_symbols.get(item.status, "[?]")
-        line = f"  {sym:10s} {item.kind:15s} {item.name}"
-        if item.diff:
-            line += f"  — {item.diff}"
-        print(line)
+        header = f"  {sym:10s} {item.kind:15s} {item.name}"
+        if not item.diff:
+            print(header)
+            continue
+        diff_lines = item.diff.split("\n")
+        prefix = f"{header}  — "
+        print(f"{prefix}{diff_lines[0]}")
+        indent = " " * len(prefix)
+        for line in diff_lines[1:]:
+            print(f"{indent}{line}")
 
 
 def apply_plan(plan_items: List[PlanItem]) -> int:
@@ -1418,23 +1430,45 @@ def cmd_sync(args: argparse.Namespace) -> int:
 
     plan_items: List[PlanItem] = []
 
-    # 3. Check KV mount
+    # -- vault.kv_mount + vault.kv_version --
     plan_items.append(check_kv_mount(client, kv_mount, kv_version))
+    # -- vault.secret_prefix --
+    plan_items.append(PlanItem("config", "vault.secret_prefix", "info", secret_prefix))
+    # -- vault.wrap_ttl --
+    wrap_ttl = vault_cfg.get("wrap_ttl", "300s")
+    plan_items.append(PlanItem("config", "vault.wrap_ttl", "info", wrap_ttl))
 
-    # 4. Check OIDC auth mount
+    # -- vault.oidc_mount --
     plan_items.append(check_oidc_auth_mount(client, oidc_mount))
+    # -- vault.oidc_role_prefix --
+    plan_items.append(PlanItem("config", "vault.oidc_role_prefix", "info", oidc_role_prefix or "(none)"))
+    # -- vault.allowed_redirect_uris --
+    plan_items.append(PlanItem("config", "vault.allowed_redirect_uris", "info", ", ".join(allowed_redirect_uris)))
+    # -- vault.user_claim --
+    plan_items.append(PlanItem("config", "vault.user_claim", "info", user_claim))
+    # -- vault.bound_claim_key --
+    plan_items.append(PlanItem("config", "vault.bound_claim_key", "info", bound_claim_key))
+    # -- vault.token_ttl --
+    plan_items.append(PlanItem("config", "vault.token_ttl", "info", token_ttl))
 
-    # 5. Check OIDC config
+    # -- oidc config (issuer_url + client_id) --
     if issuer_url and kc_client_id:
         plan_items.append(check_oidc_config(
             client, oidc_mount, issuer_url, kc_client_id, oidc_client_secret,
         ))
+    elif issuer_url or kc_client_id:
+        plan_items.append(PlanItem(
+            "oidc_config", f"auth/{oidc_mount}/config", "error",
+            f"both oidc.issuer_url and oidc.client_id are required (have issuer_url={issuer_url!r}, client_id={kc_client_id!r})",
+        ))
 
-    # 6. Check shared policy
+    # -- vault.policies.shared_policy_name --
     shared_hcl = build_shared_policy_hcl(kv_mount, secret_prefix)
     plan_items.append(check_policy(client, shared_policy_name, shared_hcl))
+    # -- vault.policies.bot_policy_prefix --
+    plan_items.append(PlanItem("config", "vault.policies.bot_policy_prefix", "info", bot_policy_prefix))
 
-    # 7. Per-bot checks
+    # -- per-bot checks --
     for bot in bots:
         bot_name = bot["name"]
         bot_policy_name = f"{bot_policy_prefix}{bot_name}"
