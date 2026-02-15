@@ -1,17 +1,17 @@
 /**
- * End-to-end tests for the Playwright-based Keycloak login flow.
+ * End-to-end tests for the Playwright-based OIDC login flow.
  *
- * These tests are OPTIONAL and only run when E2E_KEYCLOAK_BASE_URL is set.
- * They require a real Keycloak instance with Duo MFA configured.
+ * These tests are OPTIONAL and only run when E2E_OIDC_BASE_URL is set.
+ * They require a real OIDC provider instance with Duo MFA configured.
  *
  * Environment variables:
- *   E2E_KEYCLOAK_BASE_URL - Base URL of Keycloak (e.g., https://keycloak.example.com)
- *   E2E_KEYCLOAK_REALM - Realm name
- *   E2E_KEYCLOAK_CLIENT_ID - Client ID
- *   E2E_KEYCLOAK_CLIENT_SECRET - Client secret
+ *   E2E_OIDC_BASE_URL - Base URL of the OIDC provider (e.g., https://idp.example.com)
+ *   E2E_OIDC_REALM - Realm name
+ *   E2E_OIDC_CLIENT_ID - Client ID
+ *   E2E_OIDC_CLIENT_SECRET - Client secret
  *   E2E_APPROVER_USERNAME - Username for the approver user
  *   E2E_APPROVER_PASSWORD - Password for the approver user
- *   E2E_REDIRECT_URI - Redirect URI (must be registered in Keycloak)
+ *   E2E_REDIRECT_URI - Redirect URI (must be registered in the OIDC provider)
  */
 
 import { PlaywrightDriver } from '../../src/playwrightDriver';
@@ -22,15 +22,15 @@ import {
   exchangeCode,
 } from '../../src/oidcDriver';
 
-const SKIP_REASON = 'E2E tests skipped: set E2E_KEYCLOAK_BASE_URL to run';
+const SKIP_REASON = 'E2E tests skipped: set E2E_OIDC_BASE_URL to run';
 
-const isE2E = !!process.env.E2E_KEYCLOAK_BASE_URL;
+const isE2E = !!process.env.E2E_OIDC_BASE_URL;
 
-(isE2E ? describe : describe.skip)('E2E: Keycloak + Duo headless login', () => {
-  const baseURL = process.env.E2E_KEYCLOAK_BASE_URL!;
-  const realm = process.env.E2E_KEYCLOAK_REALM!;
-  const clientID = process.env.E2E_KEYCLOAK_CLIENT_ID!;
-  const clientSecret = process.env.E2E_KEYCLOAK_CLIENT_SECRET!;
+(isE2E ? describe : describe.skip)('E2E: OIDC + Duo headless login', () => {
+  const baseURL = process.env.E2E_OIDC_BASE_URL!;
+  const realm = process.env.E2E_OIDC_REALM!;
+  const clientID = process.env.E2E_OIDC_CLIENT_ID!;
+  const clientSecret = process.env.E2E_OIDC_CLIENT_SECRET!;
   const username = process.env.E2E_APPROVER_USERNAME!;
   const password = process.env.E2E_APPROVER_PASSWORD!;
   const redirectURI = process.env.E2E_REDIRECT_URI || 'http://localhost:8080/oidc/callback';

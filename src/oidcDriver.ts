@@ -93,13 +93,13 @@ export async function exchangeCode(
   return (await resp.json()) as OIDCTokens;
 }
 
-export async function checkKeycloakReachable(issuerURL: string): Promise<boolean> {
+export async function checkOidcReachable(issuerURL: string): Promise<boolean> {
   const discoveryURL = `${issuerURL.replace(/\/$/, '')}/.well-known/openid-configuration`;
   try {
     await fetchOIDCDiscovery(issuerURL);
     return true;
   } catch (err) {
-    logger.warn('Keycloak readiness check failed', {
+    logger.warn('OIDC provider readiness check failed', {
       url: discoveryURL,
       error: (err as Error).message,
     });

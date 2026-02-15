@@ -3,7 +3,7 @@ import { Config, validateServiceExists, capTTL, ttlToVaultString } from './confi
 import { RequestStore } from './requestStore';
 import { Worker } from './worker';
 import { jwtMiddleware } from './jwtMiddleware';
-import { checkKeycloakReachable } from './oidcDriver';
+import { checkOidcReachable } from './oidcDriver';
 import { VaultClient } from './vaultClient';
 import logger from './logger';
 
@@ -82,24 +82,24 @@ export function createHealthRouter(config: Config, vaultClient: VaultClient): Ro
     res.json({ status: 'ok' });
   });
 
-  // GET /readyz — readiness (checks Keycloak + Vault)
+  // GET /readyz — readiness (checks OIDC provider + Vault)
   router.get('/readyz', async (_req: Request, res: Response) => {
     try {
       const [kcOk, vaultOk] = await Promise.all([
-        checkKeycloakReachable(config.keycloak.issuerURL),
+        checkOidcReachable(config.oidc.issuerURL),
         vaultClient.checkHealth(),
       ]);
 
       if (kcOk && vaultOk) {
-        res.json({ status: 'ready', keycloak: 'ok', vault: 'ok' });
+        res.json({ status: 'ready', oidc: 'ok', vault: 'ok' });
       } else {
         logger.warn('Readiness check failed', {
-          keycloak: kcOk ? 'ok' : 'unreachable',
+          oidc: kcOk ? 'ok' : 'unreachable',
           vault: vaultOk ? 'ok' : 'unreachable',
         });
         res.status(503).json({
           status: 'not ready',
-          keycloak: kcOk ? 'ok' : 'unreachable',
+          oidc: kcOk ? 'ok' : 'unreachable',
           vault: vaultOk ? 'ok' : 'unreachable',
         });
       }

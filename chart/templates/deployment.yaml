@@ -43,20 +43,20 @@ spec:
               value: ":8080"
             - name: BROKER_CONFIG_PATH
               value: "/etc/agentd-secrets/config.yaml"
-            # -- Keycloak
-            - name: KEYCLOAK_ISSUER_URL
-              value: {{ .Values.keycloak.issuerURL | quote }}
-            - name: KEYCLOAK_AUDIENCE
-              value: {{ .Values.keycloak.audience | quote }}
-            - name: KEYCLOAK_CLIENT_ID
-              value: {{ .Values.keycloak.clientID | quote }}
-            - name: KEYCLOAK_REALM
-              value: {{ .Values.keycloak.realm | quote }}
-            - name: KEYCLOAK_CLIENT_SECRET
+            # -- OIDC
+            - name: OIDC_ISSUER_URL
+              value: {{ .Values.oidc.issuerURL | quote }}
+            - name: OIDC_AUDIENCE
+              value: {{ .Values.oidc.audience | quote }}
+            - name: OIDC_CLIENT_ID
+              value: {{ .Values.oidc.clientID | quote }}
+            - name: OIDC_REALM
+              value: {{ .Values.oidc.realm | quote }}
+            - name: OIDC_CLIENT_SECRET
               valueFrom:
                 secretKeyRef:
                   name: {{ .Values.existingSecret | default (printf "%s-secrets" (include "agentd-secrets.fullname" .)) }}
-                  key: KEYCLOAK_CLIENT_SECRET
+                  key: OIDC_CLIENT_SECRET
             # -- Vault (OIDC auth — Vault CLI-style localhost flow)
             - name: VAULT_ADDR
               value: {{ .Values.vault.addr | quote }}
@@ -82,19 +82,19 @@ spec:
                   name: {{ .Values.existingSecret | default (printf "%s-secrets" (include "agentd-secrets.fullname" .)) }}
                   key: WRAPTOKEN_ENC_KEY
             # -- Headless OIDC login credentials
-            - name: KEYCLOAK_USERNAME
+            - name: OIDC_USERNAME
               valueFrom:
                 secretKeyRef:
                   name: {{ .Values.existingSecret | default (printf "%s-secrets" (include "agentd-secrets.fullname" .)) }}
-                  key: KEYCLOAK_USERNAME
-            - name: KEYCLOAK_PASSWORD
+                  key: OIDC_USERNAME
+            - name: OIDC_PASSWORD
               valueFrom:
                 secretKeyRef:
                   name: {{ .Values.existingSecret | default (printf "%s-secrets" (include "agentd-secrets.fullname" .)) }}
-                  key: KEYCLOAK_PASSWORD
-            - name: KC_LOGIN_TIMEOUT
+                  key: OIDC_PASSWORD
+            - name: OIDC_LOGIN_TIMEOUT
               value: {{ .Values.login.loginTimeout | quote }}
-            - name: KC_DUO_TIMEOUT
+            - name: OIDC_DUO_TIMEOUT
               value: {{ .Values.login.duoTimeout | quote }}
             - name: PLAYWRIGHT_HEADLESS
               value: {{ .Values.playwright.headless | quote }}

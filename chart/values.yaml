@@ -46,15 +46,15 @@ ingress:
           pathType: Prefix
   tls: []
 
-# -- Keycloak OIDC connection settings
-keycloak:
-  # -- Realm issuer URL (e.g. https://keycloak.example.com/realms/myrealm)
+# -- OIDC connection settings
+oidc:
+  # -- Realm issuer URL (e.g. https://idp.example.com/realms/myrealm)
   issuerURL: ""
   # -- Expected JWT audience (optional)
   audience: ""
-  # -- Broker's Keycloak client ID
+  # -- Broker's OIDC client ID
   clientID: ""
-  # -- Keycloak realm name
+  # -- OIDC realm name
   realm: ""
 
 # -- Vault connection settings (OIDC auth — Vault CLI-style localhost flow)
@@ -73,7 +73,7 @@ vault:
 # -- Localhost OIDC callback listener (Vault CLI-style flow).
 # The broker starts a temporary HTTP server on this address to capture
 # the OIDC redirect.  No public callback endpoint is needed.
-# IMPORTANT: The Vault OIDC role and Keycloak client must both include
+# IMPORTANT: The Vault OIDC role and OIDC provider client must both include
 # the redirectURI in their allowed redirect URIs.
 oidcCallback:
   # -- Listen address for the temporary callback server
@@ -84,12 +84,12 @@ oidcCallback:
   redirectURI: "http://localhost:8250/oidc/callback"
 
 # -- Name of an existing Secret containing sensitive env vars.
-# Must contain keys: KEYCLOAK_CLIENT_SECRET, WRAPTOKEN_ENC_KEY, KEYCLOAK_USERNAME, KEYCLOAK_PASSWORD
+# Must contain keys: OIDC_CLIENT_SECRET, WRAPTOKEN_ENC_KEY, OIDC_USERNAME, OIDC_PASSWORD
 existingSecret: ""
 
 # -- Headless OIDC login timing
 login:
-  # -- Keycloak login page timeout
+  # -- OIDC login page timeout
   loginTimeout: "2m"
   # -- Duo push approval timeout
   duoTimeout: "5m"
@@ -102,7 +102,7 @@ playwright:
   browser: "chromium"
 
 # -- Service registry YAML mounted into the pod.
-# Defines which services the broker can mediate and their Vault/Keycloak mappings.
+# Defines which services the broker can mediate and their Vault/OIDC mappings.
 # See config.example.yaml for the full schema.
 serviceRegistry:
   # payroll-db:
@@ -110,7 +110,7 @@ serviceRegistry:
   #     kv2_mount: "secret"
   #     kv2_path: "prod/payroll/db"
   #   authz:
-  #     keycloak:
+  #     oidc:
   #       resource_id: "vault:payroll-db"
   #       scope: "read"
   #   wrap:

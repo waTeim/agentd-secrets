@@ -1,6 +1,6 @@
 apiVersion: v2
 name: agentd-secrets
-description: Secret access broker with Keycloak UMA approval and Vault response wrapping
+description: Secret access broker with OIDC approval and Vault response wrapping
 type: application
 version: 0.1.0
 appVersion: "0.1.0"

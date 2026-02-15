@@ -66,11 +66,11 @@ export class PlaywrightDriver implements IPlaywrightDriver {
       const page = await context.newPage();
 
       // Navigate to authorization URL
-      logger.info('Navigating to Keycloak auth URL');
+      logger.info('Navigating to OIDC provider auth URL');
       await page.goto(authURL, { timeout: this.options.loginTimeout });
 
-      // Fill in username and password on Keycloak login form
-      logger.info('Filling Keycloak login form');
+      // Fill in username and password on OIDC login form
+      logger.info('Filling OIDC login form');
       await page.waitForSelector('#username', { timeout: this.options.loginTimeout });
       await page.fill('#username', username);
       await page.fill('#password', password);
@@ -102,10 +102,10 @@ export class PlaywrightDriver implements IPlaywrightDriver {
           const urlObj = new URL(currentUrl);
           const error = urlObj.searchParams.get('error');
           const desc = urlObj.searchParams.get('error_description');
-          throw new Error(`Keycloak auth error: ${error} - ${desc}`);
+          throw new Error(`OIDC auth error: ${error} - ${desc}`);
         }
 
-        // Check for Keycloak error messages on the page
+        // Check for OIDC provider error messages on the page
         const errorEl = await page.$('.alert-error, .kc-feedback-text');
         if (errorEl) {
           const errorText = await errorEl.textContent();
@@ -113,7 +113,7 @@ export class PlaywrightDriver implements IPlaywrightDriver {
               errorText?.toLowerCase().includes('rejected')) {
             throw new Error('DUO_DENIED');
           }
-          throw new Error(`Keycloak login error: ${errorText}`);
+          throw new Error(`OIDC login error: ${errorText}`);
         }
 
         throw new Error(`Login timed out after ${this.options.duoTimeout}ms`);

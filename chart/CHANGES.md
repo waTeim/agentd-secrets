@@ -8,7 +8,7 @@ Minimal edits to support the Node.js + Playwright broker replacing the Go UMA-ba
 
 ### `values.yaml`
 
-- **Added `approver` section** with `redirectURI`, `loginTimeout`, and `duoTimeout` defaults for the headless Keycloak login flow.
+- **Added `approver` section** with `redirectURI`, `loginTimeout`, and `duoTimeout` defaults for the headless OIDC login flow.
 - **Added `playwright` section** with `headless` (default `"true"`) and `browser` (default `"chromium"`) settings.
 - **Updated `existingSecret` comment** to document the two new required secret keys: `KC_APPROVER_USERNAME` and `KC_APPROVER_PASSWORD`.
 
@@ -30,7 +30,7 @@ Minimal edits to support the Node.js + Playwright broker replacing the Go UMA-ba
 
 ## Why
 
-The new broker drives a headless Chromium browser (via Playwright) to perform Keycloak OIDC login + Duo MFA approval. This requires:
+The new broker drives a headless Chromium browser (via Playwright) to perform OIDC login + Duo MFA approval. This requires:
 
 1. Credentials for the dedicated approver user (stored in the existing K8s Secret).
 2. Configuration for timeouts and the OIDC redirect URI.

@@ -8,7 +8,7 @@ export interface ServiceEntry {
     kv2_path: string;
   };
   authz?: {
-    keycloak?: {
+    oidc?: {
       resource_id?: string;
       scope?: string;
     };
@@ -24,7 +24,7 @@ export interface ServiceRegistry {
 }
 
 export interface Config {
-  keycloak: {
+  oidc: {
     issuerURL: string;
     realm: string;
     clientID: string;
@@ -128,12 +128,12 @@ export function loadConfig(): Config {
   const registry = loadServiceRegistry(configPath);
 
   return {
-    keycloak: {
-      issuerURL: requireEnv('KEYCLOAK_ISSUER_URL'),
-      realm: process.env.KEYCLOAK_REALM || '',
-      clientID: requireEnv('KEYCLOAK_CLIENT_ID'),
-      clientSecret: requireEnv('KEYCLOAK_CLIENT_SECRET'),
-      audience: process.env.KEYCLOAK_AUDIENCE || '',
+    oidc: {
+      issuerURL: requireEnv('OIDC_ISSUER_URL'),
+      realm: process.env.OIDC_REALM || '',
+      clientID: requireEnv('OIDC_CLIENT_ID'),
+      clientSecret: requireEnv('OIDC_CLIENT_SECRET'),
+      audience: process.env.OIDC_AUDIENCE || '',
     },
     vault: {
       addr: requireEnv('VAULT_ADDR'),
@@ -151,10 +151,10 @@ export function loadConfig(): Config {
     listenAddr,
     listenPort,
     login: {
-      username: requireEnv('KEYCLOAK_USERNAME'),
-      password: requireEnv('KEYCLOAK_PASSWORD'),
-      loginTimeout: parseDuration(process.env.KC_LOGIN_TIMEOUT || '2m', 120_000),
-      duoTimeout: parseDuration(process.env.KC_DUO_TIMEOUT || '5m', 300_000),
+      username: requireEnv('OIDC_USERNAME'),
+      password: requireEnv('OIDC_PASSWORD'),
+      loginTimeout: parseDuration(process.env.OIDC_LOGIN_TIMEOUT || '2m', 120_000),
+      duoTimeout: parseDuration(process.env.OIDC_DUO_TIMEOUT || '5m', 300_000),
     },
     playwright: {
       headless: process.env.PLAYWRIGHT_HEADLESS !== 'false',

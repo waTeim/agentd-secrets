@@ -21,15 +21,15 @@ describe('API Integration Tests', () => {
   const encKeyHex = crypto.randomBytes(32).toString('hex');
   const encKey = Buffer.from(encKeyHex, 'hex');
   const fixtureConfig = path.join(__dirname, '..', 'fixtures', 'config.yaml');
-  const issuer = 'https://keycloak.example.com/realms/test';
+  const issuer = 'https://idp.example.com/realms/test';
   const audience = 'agentd-secrets';
 
   let jwksServer: http.Server;
   let jwksPort: number;
   let privateKey: jose.KeyLike;
 
-  let keycloakDiscoveryServer: http.Server;
-  let keycloakPort: number;
+  let oidcDiscoveryServer: http.Server;
+  let oidcPort: number;
 
   let vaultServer: http.Server;
   let vaultPort: number;
@@ -48,14 +48,14 @@ describe('API Integration Tests', () => {
     jwk.alg = 'RS256';
     jwk.use = 'sig';
 
-    // Mock Keycloak (OIDC discovery + JWKS + token endpoint)
+    // Mock OIDC provider (OIDC discovery + JWKS + token endpoint)
     const kcApp = express();
     kcApp.get('/realms/test/.well-known/openid-configuration', (_req, res) => {
       res.json({
-        issuer: `http://127.0.0.1:${keycloakPort}/realms/test`,
-        authorization_endpoint: `http://127.0.0.1:${keycloakPort}/realms/test/protocol/openid-connect/auth`,
-        token_endpoint: `http://127.0.0.1:${keycloakPort}/realms/test/protocol/openid-connect/token`,
-        jwks_uri: `http://127.0.0.1:${keycloakPort}/realms/test/protocol/openid-connect/certs`,
+        issuer: `http://127.0.0.1:${oidcPort}/realms/test`,
+        authorization_endpoint: `http://127.0.0.1:${oidcPort}/realms/test/protocol/openid-connect/auth`,
+        token_endpoint: `http://127.0.0.1:${oidcPort}/realms/test/protocol/openid-connect/token`,
+        jwks_uri: `http://127.0.0.1:${oidcPort}/realms/test/protocol/openid-connect/certs`,
       });
     });
     kcApp.get('/realms/test/protocol/openid-connect/certs', (_req, res) => {
@@ -66,7 +66,7 @@ describe('API Integration Tests', () => {
       // Return a mock access token
       const token = await new jose.SignJWT({ sub: 'approver' })
         .setProtectedHeader({ alg: 'RS256', kid: 'test-key-1' })
-        .setIssuer(`http://127.0.0.1:${keycloakPort}/realms/test`)
+        .setIssuer(`http://127.0.0.1:${oidcPort}/realms/test`)
         .setAudience(audience)
         .setExpirationTime('5m')
         .setIssuedAt()
@@ -78,10 +78,10 @@ describe('API Integration Tests', () => {
       });
     });
 
-    keycloakDiscoveryServer = await new Promise<http.Server>((resolve) => {
+    oidcDiscoveryServer = await new Promise<http.Server>((resolve) => {
       const s = kcApp.listen(0, '127.0.0.1', () => resolve(s));
     });
-    keycloakPort = (keycloakDiscoveryServer.address() as { port: number }).port;
+    oidcPort = (oidcDiscoveryServer.address() as { port: number }).port;
 
     // Mock Vault
     const vaultApp = express();
@@ -105,11 +105,11 @@ describe('API Integration Tests', () => {
     vaultPort = (vaultServer.address() as { port: number }).port;
 
     // Set up env and load config
-    process.env.KEYCLOAK_ISSUER_URL = `http://127.0.0.1:${keycloakPort}/realms/test`;
-    process.env.KEYCLOAK_REALM = 'test';
-    process.env.KEYCLOAK_CLIENT_ID = 'agentd-secrets';
-    process.env.KEYCLOAK_CLIENT_SECRET = 'test-secret';
-    process.env.KEYCLOAK_AUDIENCE = audience;
+    process.env.OIDC_ISSUER_URL = `http://127.0.0.1:${oidcPort}/realms/test`;
+    process.env.OIDC_REALM = 'test';
+    process.env.OIDC_CLIENT_ID = 'agentd-secrets';
+    process.env.OIDC_CLIENT_SECRET = 'test-secret';
+    process.env.OIDC_AUDIENCE = audience;
     process.env.VAULT_ADDR = `http://127.0.0.1:${vaultPort}`;
     process.env.VAULT_OIDC_MOUNT = 'oidc';
     process.env.VAULT_OIDC_ROLE = 'agentd-secrets';
@@ -117,13 +117,13 @@ describe('API Integration Tests', () => {
     process.env.VAULT_WRAP_TTL = '300s';
     process.env.WRAPTOKEN_ENC_KEY = encKeyHex;
     process.env.BROKER_CONFIG_PATH = fixtureConfig;
-    process.env.KEYCLOAK_USERNAME = 'approver';
-    process.env.KEYCLOAK_PASSWORD = 'password';
+    process.env.OIDC_USERNAME = 'approver';
+    process.env.OIDC_PASSWORD = 'password';
     process.env.OIDC_LOCAL_REDIRECT_URI = 'http://localhost:8250/oidc/callback';
 
     // Initialize JWT middleware
     const { initJwtMiddleware } = require('../../src/jwtMiddleware');
-    initJwtMiddleware(`http://127.0.0.1:${keycloakPort}/realms/test`, audience);
+    initJwtMiddleware(`http://127.0.0.1:${oidcPort}/realms/test`, audience);
 
     // Load config
     const config: Config = loadConfig();
@@ -150,7 +150,7 @@ describe('API Integration Tests', () => {
     store.shutdown();
     appServer.close(() => {
       vaultServer.close(() => {
-        keycloakDiscoveryServer.close(done);
+        oidcDiscoveryServer.close(done);
       });
     });
   });
@@ -158,7 +158,7 @@ describe('API Integration Tests', () => {
   async function makeToken(): Promise<string> {
     return new jose.SignJWT({ sub: 'bot-user' })
       .setProtectedHeader({ alg: 'RS256', kid: 'test-key-1' })
-      .setIssuer(`http://127.0.0.1:${keycloakPort}/realms/test`)
+      .setIssuer(`http://127.0.0.1:${oidcPort}/realms/test`)
       .setAudience(audience)
       .setExpirationTime('5m')
       .setIssuedAt()
@@ -172,12 +172,12 @@ describe('API Integration Tests', () => {
     expect(body.status).toBe('ok');
   });
 
-  test('GET /readyz checks Keycloak and Vault', async () => {
+  test('GET /readyz checks OIDC provider and Vault', async () => {
     const resp = await fetch(`http://127.0.0.1:${appPort}/readyz`);
     expect(resp.status).toBe(200);
     const body = await resp.json() as Record<string, string>;
     expect(body.status).toBe('ready');
-    expect(body.keycloak).toBe('ok');
+    expect(body.oidc).toBe('ok');
     expect(body.vault).toBe('ok');
   });
 

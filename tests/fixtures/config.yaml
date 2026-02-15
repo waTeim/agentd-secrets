@@ -4,7 +4,7 @@ services:
       kv2_mount: "secret"
       kv2_path: "prod/payroll/db"
     authz:
-      keycloak:
+      oidc:
         resource_id: "vault:payroll-db"
         scope: "read"
     wrap:

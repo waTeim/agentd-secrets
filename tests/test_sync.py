@@ -101,7 +101,7 @@ class MockVaultClient:
 
 
 # ---------------------------------------------------------------------------
-# Mock Keycloak responses
+# Mock OIDC responses
 # ---------------------------------------------------------------------------
 
 # ---------------------------------------------------------------------------
@@ -138,7 +138,7 @@ def make_config(
             },
         },
         "oidc": {
-            "issuer_url": "https://keycloak.example.com/realms/REALM",
+            "issuer_url": "https://idp.example.com/realms/REALM",
             "client_id": "agentd-secrets",
         },
         "bots": bots,

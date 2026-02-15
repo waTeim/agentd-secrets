@@ -1,11 +1,11 @@
 # agentd-secrets — Secret Access Broker
 
-A Node.js/TypeScript service that brokers access to HashiCorp Vault secrets with human-in-the-loop approval via Keycloak + Duo MFA.
+A Node.js/TypeScript service that brokers access to HashiCorp Vault secrets with human-in-the-loop approval via OIDC + Duo MFA.
 
 ## How It Works
 
 ```
-Bot (CI/CD)                  agentd-secrets Broker                   Vault                 Keycloak + Duo
+Bot (CI/CD)                  agentd-secrets Broker                   Vault                 OIDC Provider + Duo
     |                             |                            |                         |
     |-- POST /v1/requests ------->|                            |                         |
     |<-- 202 {request_id} --------|                            |                         |
@@ -25,17 +25,17 @@ Bot (CI/CD)                  agentd-secrets Broker                   Vault      
     |<-- {status:APPROVED, wrap_token} --|                     |                         |
 ```
 
-1. **Bot requests a secret** -- An automated client sends `POST /v1/requests` with a service name, reason, and identity. The bot authenticates with a Keycloak-issued JWT (Bearer token).
+1. **Bot requests a secret** -- An automated client sends `POST /v1/requests` with a service name, reason, and identity. The bot authenticates with an OIDC-issued JWT (Bearer token).
 
 2. **Vault OIDC auth URL** -- The broker requests an OIDC auth URL from Vault's OIDC auth method (`POST /v1/auth/{mount}/oidc/auth_url`), providing a `redirect_uri` of `http://localhost:8250/oidc/callback`.
 
 3. **Local callback listener** -- The broker starts an ephemeral HTTP server on `127.0.0.1:8250` inside the pod to capture the OIDC callback redirect. This emulates `vault login -method=oidc`.
 
-4. **Headless browser login** -- Playwright opens the Vault-provided auth URL in a headless Chromium browser, fills in the Keycloak login form with the dedicated approver credentials, and submits.
+4. **Headless browser login** -- Playwright opens the Vault-provided auth URL in a headless Chromium browser, fills in the OIDC login form with the dedicated approver credentials, and submits.
 
-5. **Duo MFA push** -- Keycloak triggers a Duo push notification to the approver's phone. The human taps "Approve" in Duo Mobile.
+5. **Duo MFA push** -- The OIDC provider triggers a Duo push notification to the approver's phone. The human taps "Approve" in Duo Mobile.
 
-6. **Callback capture** -- After Duo approval, Keycloak redirects the browser to `http://localhost:8250/oidc/callback?code=...&state=...`. The local listener captures the parameters.
+6. **Callback capture** -- After Duo approval, the OIDC provider redirects the browser to `http://localhost:8250/oidc/callback?code=...&state=...`. The local listener captures the parameters.
 
 7. **Vault token exchange** -- The broker completes the OIDC callback exchange with Vault (`GET /v1/auth/{mount}/oidc/callback?state=...&code=...&client_nonce=...`). Vault returns a `client_token`.
 
@@ -98,7 +98,7 @@ Liveness probe. Always returns `200 OK`.
 
 ### `GET /readyz`
 
-Readiness probe. Returns `200` if Keycloak OIDC discovery and Vault `sys/health` are reachable, `503` otherwise.
+Readiness probe. Returns `200` if OIDC discovery and Vault `sys/health` are reachable, `503` otherwise.
 
 ## Configuration Reference
 
@@ -106,11 +106,11 @@ Readiness probe. Returns `200` if Keycloak OIDC discovery and Vault `sys/health`
 
 | Variable | Required | Default | Description |
 |---|---|---|---|
-| `KEYCLOAK_ISSUER_URL` | Yes | -- | Keycloak realm issuer URL |
-| `KEYCLOAK_REALM` | No | `""` | Keycloak realm name |
-| `KEYCLOAK_CLIENT_ID` | Yes | -- | Broker's Keycloak client ID |
-| `KEYCLOAK_CLIENT_SECRET` | Yes | -- | Broker's Keycloak client secret |
-| `KEYCLOAK_AUDIENCE` | No | `""` | Expected JWT audience claim |
+| `OIDC_ISSUER_URL` | Yes | -- | OIDC realm issuer URL |
+| `OIDC_REALM` | No | `""` | OIDC realm name |
+| `OIDC_CLIENT_ID` | Yes | -- | Broker's OIDC client ID |
+| `OIDC_CLIENT_SECRET` | Yes | -- | Broker's OIDC client secret |
+| `OIDC_AUDIENCE` | No | `""` | Expected JWT audience claim |
 | `VAULT_ADDR` | Yes | -- | Vault server address |
 | `VAULT_OIDC_MOUNT` | No | `oidc` | Vault OIDC auth method mount path |
 | `VAULT_OIDC_ROLE` | No | `agentd-secrets` | Vault OIDC auth role |
@@ -122,10 +122,10 @@ Readiness probe. Returns `200` if Keycloak OIDC discovery and Vault `sys/health`
 | `WRAPTOKEN_ENC_KEY` | Yes | -- | 64 hex chars (32 bytes) for AES-256-GCM encryption |
 | `BROKER_LISTEN_ADDR` | No | `:8080` | Listen address |
 | `BROKER_CONFIG_PATH` | No | `/etc/agentd-secrets/config.yaml` | Path to service registry |
-| `KEYCLOAK_USERNAME` | Yes | -- | Keycloak user for headless login |
-| `KEYCLOAK_PASSWORD` | Yes | -- | Password for the approver user |
-| `KC_LOGIN_TIMEOUT` | No | `2m` | Timeout for Keycloak login page |
-| `KC_DUO_TIMEOUT` | No | `5m` | Timeout waiting for Duo push approval |
+| `OIDC_USERNAME` | Yes | -- | OIDC user for headless login |
+| `OIDC_PASSWORD` | Yes | -- | Password for the approver user |
+| `OIDC_LOGIN_TIMEOUT` | No | `2m` | Timeout for OIDC login page |
+| `OIDC_DUO_TIMEOUT` | No | `5m` | Timeout waiting for Duo push approval |
 | `PLAYWRIGHT_HEADLESS` | No | `true` | Run Chromium headless |
 | `PLAYWRIGHT_BROWSER` | No | `chromium` | Browser engine |
 | `LOG_LEVEL` | No | `info` | Log level (debug, info, warn, error) |
@@ -141,7 +141,7 @@ services:
       kv2_mount: "secret"
       kv2_path: "prod/payroll/db"
     authz:
-      keycloak:
+      oidc:
         resource_id: "vault:payroll-db"
         scope: "read"
     wrap:
@@ -155,7 +155,7 @@ The `authz` block is retained for backward compatibility but is not used for gat
 
 ### Vault OIDC Auth Method
 
-The Vault OIDC auth method must be enabled and configured with Keycloak as the identity provider. The Vault role must include `http://localhost:8250/oidc/callback` in its `allowed_redirect_uris`:
+The Vault OIDC auth method must be enabled and configured with an OIDC provider as the identity provider. The Vault role must include `http://localhost:8250/oidc/callback` in its `allowed_redirect_uris`:
 
 ```bash
 vault write auth/oidc/role/agentd-secrets \
@@ -167,9 +167,9 @@ vault write auth/oidc/role/agentd-secrets \
   token_ttl="15m"
 ```
 
-### Keycloak Client
+### OIDC Client
 
-The Keycloak OIDC client (`agentd-secrets` or whatever `KEYCLOAK_CLIENT_ID` is set to) must have `http://localhost:8250/oidc/callback` as a valid redirect URI. Since the callback is on localhost inside the pod, no public ingress is needed.
+The OIDC client (`agentd-secrets` or whatever `OIDC_CLIENT_ID` is set to) must have `http://localhost:8250/oidc/callback` as a valid redirect URI. Since the callback is on localhost inside the pod, no public ingress is needed.
 
 ### Vault KV Policy
 
@@ -187,7 +187,7 @@ path "secret/data/prod/payroll/*" {
 - **Localhost callback** -- The OIDC callback listener runs on `127.0.0.1` inside the pod. No public callback endpoint is exposed.
 - **Token caching with mutex** -- Concurrent requests share a single Vault token (Option A: serialized logins). Only one OIDC login happens at a time; subsequent requests reuse the cached token until it expires.
 - **Wrap tokens encrypted at rest** -- AES-256-GCM with a random 12-byte nonce prepended to ciphertext. Key provided via `WRAPTOKEN_ENC_KEY`.
-- **Bot JWT validation** -- All API requests require a valid JWT signed by the Keycloak realm, validated against JWKS with issuer and audience checks.
+- **Bot JWT validation** -- All API requests require a valid JWT signed by the OIDC provider, validated against JWKS with issuer and audience checks.
 - **Rate limiting** -- `POST /v1/requests` is rate-limited (30 req/min per IP).
 - **Request IDs** -- UUIDv4, cryptographically random and unguessable.
 - **Wrap TTL capping** -- Requested TTLs are capped to the service's `max_ttl`.
@@ -197,10 +197,10 @@ path "secret/data/prod/payroll/*" {
 
 ### Risk: Storing Approver Credentials
 
-The broker stores a real Keycloak user's password (`KEYCLOAK_PASSWORD`) in a Kubernetes Secret. Recommendations:
+The broker stores a real OIDC user's password (`OIDC_PASSWORD`) in a Kubernetes Secret. Recommendations:
 
 - Use a **dedicated service account user** with minimal permissions (only the ability to authenticate and trigger Duo).
-- Set **short Keycloak session timeouts** for this user.
+- Set **short session timeouts** for this user in the OIDC provider.
 - Restrict the Kubernetes Secret with RBAC so only the broker pod can read it.
 - Rotate the password regularly.
 - Consider using Vault itself to store the password and bootstrapping via a different auth method.
@@ -218,21 +218,21 @@ bin/agentd-secrets-admin.py configure
 
 # Create Kubernetes secret
 bin/agentd-secrets-admin.py create-secret \
-  --keycloak-client-secret '...' \
-  --keycloak-password '...' \
+  --oidc-client-secret '...' \
+  --oidc-password '...' \
   --generate-enc-key
 
 # Configure Vault OIDC auth
 bin/agentd-secrets-admin.py vault-setup \
   --vault-token hvs.xxx \
-  --keycloak-client-secret '...'
+  --oidc-client-secret '...'
 ```
 
 See `bin/agentd-secrets-admin.py --help` for full usage.
 
 ### Multi-Bot Sync
 
-The `sync` subcommand reads a declarative YAML config and ensures Vault policies, OIDC roles, and Keycloak users match the desired state. It supports multi-bot isolation where each bot gets its own scoped credentials.
+The `sync` subcommand reads a declarative YAML config and ensures Vault policies, OIDC roles, and OIDC users match the desired state. It supports multi-bot isolation where each bot gets its own scoped credentials.
 
 ```bash
 # Show planned changes (default)
@@ -268,7 +268,7 @@ vault:
     bot_policy_prefix: agentd-secrets-bot-
 
 oidc:
-  issuer_url: https://keycloak.example.com/realms/REALM
+  issuer_url: https://idp.example.com/realms/REALM
   client_id: agentd-secrets
   client_password: ""            # OIDC client secret (or pass via --oidc-client-secret / K8s secret)
   username: openclaw-approver    # default headless login user
@@ -308,7 +308,7 @@ The sync subcommand enforces strict secret isolation between bots using Vault's 
 
 **Why this prevents cross-bot leakage:**
 
-1. Each bot authenticates via its own OIDC role, which binds to a unique Keycloak user (`<bot>-approver`).
+1. Each bot authenticates via its own OIDC role, which binds to a unique OIDC user (`<bot>-approver`).
 2. Each OIDC role attaches only the bot's own policy (`agentd-secrets-bot-<name>`).
 3. Bot policies use exact path prefixes — `agentd-secrets-bot-openclaw` grants access to `bots/openclaw/*` but NOT `bots/roadrunner/*`.
 4. The shared policy is embedded in each bot policy, so all bots can read shared secrets without a separate role.
@@ -358,13 +358,13 @@ npm run format
 
 ### E2E Tests
 
-E2E tests require a real Keycloak instance with Duo configured:
+E2E tests require a real OIDC provider instance with Duo configured:
 
 ```bash
-export E2E_KEYCLOAK_BASE_URL=https://keycloak.example.com
-export E2E_KEYCLOAK_REALM=myrealm
-export E2E_KEYCLOAK_CLIENT_ID=agentd-secrets
-export E2E_KEYCLOAK_CLIENT_SECRET=...
+export E2E_OIDC_BASE_URL=https://idp.example.com
+export E2E_OIDC_REALM=myrealm
+export E2E_OIDC_CLIENT_ID=agentd-secrets
+export E2E_OIDC_CLIENT_SECRET=...
 export E2E_APPROVER_USERNAME=approver
 export E2E_APPROVER_PASSWORD=...
 npm run test:e2e
@@ -381,14 +381,14 @@ docker build -t agentd-secrets:latest .
 ```bash
 # Create the secret first (or use agentd-secrets-admin.py create-secret)
 bin/agentd-secrets-admin.py create-secret \
-  --keycloak-client-secret '...' \
-  --keycloak-password '...' \
+  --oidc-client-secret '...' \
+  --oidc-password '...' \
   --generate-enc-key
 
 # Install
 helm install agentd-secrets ./chart \
-  --set keycloak.issuerURL=https://keycloak.example.com/realms/myrealm \
-  --set keycloak.clientID=agentd-secrets \
+  --set oidc.issuerURL=https://idp.example.com/realms/myrealm \
+  --set oidc.clientID=agentd-secrets \
   --set vault.addr=https://vault.example.com \
   --set vault.oidcRole=agentd-secrets \
   --set existingSecret=openclaw-agentd-secrets
@@ -398,7 +398,7 @@ helm install agentd-secrets ./chart \
 
 ### "Callback never hit" / OIDC callback timeout
 
-- **Keycloak redirect URI**: Ensure the Keycloak client has `http://localhost:8250/oidc/callback` in its valid redirect URIs.
+- **OIDC redirect URI**: Ensure the OIDC provider client has `http://localhost:8250/oidc/callback` in its valid redirect URIs.
 - **Vault role redirect URI**: Ensure the Vault OIDC role has the same URI in `allowed_redirect_uris`.
 - **Port conflict**: Verify nothing else in the pod is listening on port 8250.
 
@@ -411,7 +411,7 @@ helm install agentd-secrets ./chart \
 
 - The approver user must be enrolled in Duo with a valid device.
 - Check Duo admin console for failed push attempts.
-- Increase `KC_DUO_TIMEOUT` if the user is slow to respond.
+- Increase `OIDC_DUO_TIMEOUT` if the user is slow to respond.
 
 ### "Invalid token" / 403 on Vault KV read
 
@@ -422,7 +422,7 @@ helm install agentd-secrets ./chart \
 ## Operational Notes
 
 - **Single replica assumption** -- The in-memory request store means only one replica should run. If scaling beyond one replica, use sticky sessions (e.g., Ingress session affinity) so the bot's GET poll hits the same pod that processed its POST.
-- **Duo timeout** -- The `KC_DUO_TIMEOUT` (default 5m) determines how long the broker waits for the human to approve the Duo push. Adjust based on your organization's response time expectations.
+- **Duo timeout** -- The `OIDC_DUO_TIMEOUT` (default 5m) determines how long the broker waits for the human to approve the Duo push. Adjust based on your organization's response time expectations.
 - **Browser resource usage** -- Each pending login spawns a headless Chromium instance. Monitor memory usage and set appropriate resource limits in the Helm values.
 - **Request cleanup** -- Expired and completed requests are automatically cleaned up after 1 hour.
 - **Token reuse** -- The broker caches the Vault token and reuses it for multiple requests. A login mutex ensures only one OIDC flow runs at a time, even under concurrent requests.

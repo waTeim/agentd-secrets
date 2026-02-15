@@ -271,7 +271,7 @@ export class VaultOidcManager {
    * Execute the full Vault OIDC CLI-style login flow:
    * 1. Get auth URL from Vault
    * 2. Start local callback listener
-   * 3. Drive Playwright to complete Keycloak login
+   * 3. Drive Playwright to complete OIDC login
    * 4. Exchange callback with Vault to obtain token
    */
   private async performOidcLogin(): Promise<void> {
@@ -307,8 +307,8 @@ export class VaultOidcManager {
     const callbackPromise = listener.start();
 
     try {
-      // Step 3: Drive Playwright through Keycloak login
-      logger.info('Driving headless browser for Keycloak login');
+      // Step 3: Drive Playwright through OIDC login
+      logger.info('Driving headless browser for OIDC login');
       await this.driver.login(
         authUrl,
         this.config.redirectURI,

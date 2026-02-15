@@ -158,7 +158,7 @@ describe('getVaultAuthUrl', () => {
   });
 
   test('returns auth_url from Vault response', async () => {
-    const expectedUrl = 'https://keycloak.example.com/auth?client_id=vault&state=abc123';
+    const expectedUrl = 'https://idp.example.com/auth?client_id=vault&state=abc123';
     const app = http.createServer((req, res) => {
       if (req.url === '/v1/auth/oidc/oidc/auth_url' && req.method === 'POST') {
         res.writeHead(200, { 'Content-Type': 'application/json' });
@@ -363,7 +363,7 @@ describe('VaultOidcManager', () => {
         if (req.url === authUrlPath && req.method === 'POST') {
           // Return a fake auth URL with a state parameter
           const state = crypto.randomBytes(8).toString('hex');
-          const authUrl = `http://keycloak.test/auth?client_id=vault&state=${state}&redirect_uri=http://127.0.0.1:${callbackPort}/oidc/callback`;
+          const authUrl = `http://idp.test/auth?client_id=vault&state=${state}&redirect_uri=http://127.0.0.1:${callbackPort}/oidc/callback`;
           res.writeHead(200, { 'Content-Type': 'application/json' });
           res.end(JSON.stringify({ data: { auth_url: authUrl } }));
         } else if (req.url?.startsWith(callbackPath) && req.method === 'GET') {

@@ -1,7 +1,7 @@
 {
   "name": "agentd-secrets",
   "version": "0.1.0",
-  "description": "Secret access broker with Keycloak headless approval (Duo MFA) and Vault response wrapping",
+  "description": "Secret access broker with OIDC headless approval (Duo MFA) and Vault response wrapping",
   "main": "dist/server.js",
   "scripts": {
     "build": "tsc",

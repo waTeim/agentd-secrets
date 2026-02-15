@@ -6,13 +6,13 @@ Subcommands:
     init            Query Vault and auto-populate agentd-secrets-config.yaml
     configure       Set target image config; writes agentd-secrets-config.yaml + build-config.json
     create-secret   Create the Kubernetes Secret for Helm deployment
-    vault-setup     Configure Vault OIDC auth against Keycloak
+    vault-setup     Configure Vault OIDC auth against OIDC provider
 
 Design note — Vault CLI-style OIDC flow
     The broker emulates `vault login -method=oidc` by starting a temporary
     localhost HTTP listener (default :8250) to capture the OIDC redirect.
     No public callback endpoint is required.  The Vault OIDC role and the
-    Keycloak client must both list the localhost redirect URI in their
+    OIDC provider client must both list the localhost redirect URI in their
     allowed_redirect_uris / Valid Redirect URIs respectively.
 """
 from __future__ import annotations
@@ -463,7 +463,7 @@ def cmd_init(args: argparse.Namespace) -> int:
 
     save_config(config, config_path)
     print("\n[done] init complete.")
-    print("\nNOTE: The Vault OIDC role and Keycloak client must both allow")
+    print("\nNOTE: The Vault OIDC role and OIDC provider client must both allow")
     print(f"  the redirect URI: {deep_get(config, 'oidc.callback_redirect_uri')}")
     return 0
 
@@ -551,8 +551,8 @@ def cmd_create_secret(args: argparse.Namespace) -> int:
 
     Secret keys (aligned with Helm deployment template):
         WRAPTOKEN_ENC_KEY       – Hex-encoded 32-byte AES-256 key (auto-generated)
-        KEYCLOAK_USERNAME       – Keycloak user for headless OIDC login
-        KEYCLOAK_PASSWORD       – Password for the headless login user
+        OIDC_USERNAME           – OIDC user for headless OIDC login
+        OIDC_PASSWORD           – Password for the headless login user
     """
     from kubernetes import client, config as k8s_config
     from kubernetes.client.rest import ApiException
@@ -582,7 +582,7 @@ def cmd_create_secret(args: argparse.Namespace) -> int:
             except (k8s_config.ConfigException, KeyError, TypeError):
                 namespace = "default"
 
-    keycloak_username = args.keycloak_username or deep_get(
+    oidc_username = args.oidc_username or deep_get(
         config, "oidc.username", "agentd-secrets-approver",
     )
 
@@ -596,14 +596,14 @@ def cmd_create_secret(args: argparse.Namespace) -> int:
     data["WRAPTOKEN_ENC_KEY"] = enc_key
     print(f"  WRAPTOKEN_ENC_KEY: (generated) {enc_key}")
 
-    data["KEYCLOAK_USERNAME"] = keycloak_username
-    print(f"  KEYCLOAK_USERNAME: {keycloak_username}")
+    data["OIDC_USERNAME"] = oidc_username
+    print(f"  OIDC_USERNAME: {oidc_username}")
 
-    keycloak_password = args.keycloak_password or deep_get(config, "oidc.password")
-    if not keycloak_password:
-        raise SystemExit("Error: keycloak password not provided (use --keycloak-password or set oidc.password in config)")
-    data["KEYCLOAK_PASSWORD"] = keycloak_password
-    print("  KEYCLOAK_PASSWORD: (provided)")
+    oidc_password = args.oidc_password or deep_get(config, "oidc.password")
+    if not oidc_password:
+        raise SystemExit("Error: OIDC password not provided (use --oidc-password or set oidc.password in config)")
+    data["OIDC_PASSWORD"] = oidc_password
+    print("  OIDC_PASSWORD: (provided)")
 
     if args.dry_run:
         print(f"\n[dry-run] Would create secret '{secret_name}' in namespace '{namespace}' with keys:")
@@ -653,8 +653,8 @@ def cmd_create_values(args: argparse.Namespace) -> int:
         repo = f"{target['registry']}/{target['image']}"
         values["image"] = {"repository": repo, "tag": target.get("tag", "latest")}
 
-    # keycloak / OIDC
-    keycloak: Dict[str, Any] = {}
+    # OIDC
+    oidc_vals: Dict[str, Any] = {}
     for cfg_key, val_key in [
         ("oidc.issuer_url", "issuerURL"),
         ("oidc.client_id", "clientID"),
@@ -662,11 +662,11 @@ def cmd_create_values(args: argparse.Namespace) -> int:
     ]:
         v = deep_get(config, cfg_key)
         if v:
-            keycloak[val_key] = v
+            oidc_vals[val_key] = v
     if deep_get(config, "oidc.client_id"):
-        keycloak["audience"] = deep_get(config, "oidc.client_id")
-    if keycloak:
-        values["keycloak"] = keycloak
+        oidc_vals["audience"] = deep_get(config, "oidc.client_id")
+    if oidc_vals:
+        values["oidc"] = oidc_vals
 
     # vault
     vault: Dict[str, Any] = {}
@@ -890,10 +890,10 @@ path "{kv_mount}/metadata/{secret_prefix}/*" {{
 
 
 def cmd_vault_setup(args: argparse.Namespace) -> int:
-    """Configure Vault OIDC auth against Keycloak.
+    """Configure Vault OIDC auth against OIDC provider.
 
     The Vault OIDC role is configured with the localhost redirect URI used
-    by the broker's Vault CLI-style OIDC flow.  Keycloak's client must
+    by the broker's Vault CLI-style OIDC flow.  The OIDC provider's client must
     also list this URI in its Valid Redirect URIs.
     """
     try:
@@ -915,9 +915,9 @@ def cmd_vault_setup(args: argparse.Namespace) -> int:
     oidc_role = pick(args.oidc_role, "vault.oidc_role", "agentd-secrets")
     vault_policy_name = pick(args.vault_policy_name, "vault.policy_name", "agentd-secrets-read")
 
-    keycloak_discovery_url = pick(args.keycloak_discovery_url, "oidc.issuer_url")
-    keycloak_client_id = pick(args.keycloak_client_id, "oidc.client_id")
-    keycloak_client_secret = args.keycloak_client_secret  # always from CLI
+    oidc_discovery_url = pick(args.oidc_discovery_url, "oidc.issuer_url")
+    oidc_client_id = pick(args.oidc_client_id, "oidc.client_id")
+    oidc_client_secret = args.oidc_client_secret  # always from CLI
 
     allowed_redirect_uris = pick(
         args.allowed_redirect_uris,
@@ -939,9 +939,9 @@ def cmd_vault_setup(args: argparse.Namespace) -> int:
     for name, val in [
         ("vault-addr", vault_addr),
         ("vault-token", vault_token),
-        ("keycloak-discovery-url", keycloak_discovery_url),
-        ("keycloak-client-id", keycloak_client_id),
-        ("keycloak-client-secret", keycloak_client_secret),
+        ("oidc-discovery-url", oidc_discovery_url),
+        ("oidc-client-id", oidc_client_id),
+        ("oidc-client-secret", oidc_client_secret),
         ("allowed-redirect-uris", allowed_redirect_uris),
     ]:
         if not val:
@@ -969,9 +969,9 @@ def cmd_vault_setup(args: argparse.Namespace) -> int:
     ensure_oidc_config(
         vc,
         mount_point,
-        str(keycloak_discovery_url),
-        str(keycloak_client_id),
-        str(keycloak_client_secret),
+        str(oidc_discovery_url),
+        str(oidc_client_id),
+        str(oidc_client_secret),
         str(oidc_role),
     )
     ensure_oidc_role(
@@ -979,7 +979,7 @@ def cmd_vault_setup(args: argparse.Namespace) -> int:
         mount_point=mount_point,
         role_name=str(oidc_role),
         allowed_redirect_uris=uri_list,
-        bound_audiences=[str(keycloak_client_id)],
+        bound_audiences=[str(oidc_client_id)],
         user_claim=str(user_claim),
         bound_claims={str(bound_claim_key): str(bound_claim_value)},
         policies=[str(vault_policy_name)],
@@ -992,13 +992,13 @@ def cmd_vault_setup(args: argparse.Namespace) -> int:
     print(f"  policy:        {vault_policy_name}")
     print(f"  bound claim:   {bound_claim_key} == {bound_claim_value}")
     print(f"  redirect uris: {', '.join(uri_list)}")
-    print(f"\nIMPORTANT: Ensure Keycloak client '{keycloak_client_id}' also lists")
+    print(f"\nIMPORTANT: Ensure OIDC provider client '{oidc_client_id}' also lists")
     print(f"  these redirect URIs in its Valid Redirect URIs configuration.")
     return 0
 
 
 # ---------------------------------------------------------------------------
-# sync subcommand — multi-bot Vault/Keycloak setup
+# sync subcommand — multi-bot Vault/OIDC setup
 # ---------------------------------------------------------------------------
 
 class PlanItem:
@@ -1230,7 +1230,7 @@ def check_oidc_role(
     )
 
 
-# -- Keycloak admin client --------------------------------------------------
+# -- OIDC admin client ------------------------------------------------------
 
 # -- OIDC discovery check ---------------------------------------------------
 
@@ -1346,7 +1346,7 @@ def apply_plan(plan_items: List[PlanItem]) -> int:
 # -- cmd_sync orchestrator --------------------------------------------------
 
 def cmd_sync(args: argparse.Namespace) -> int:
-    """Sync Vault and Keycloak resources to match config."""
+    """Sync Vault and OIDC resources to match config."""
     try:
         import hvac
     except ImportError:
@@ -1404,7 +1404,6 @@ def cmd_sync(args: argparse.Namespace) -> int:
     oidc_client_secret = (
         oidc_cfg.get("client_password")
         or k8s_secrets.get("oidc_client_secret")
-        or k8s_secrets.get("keycloak_client_secret")  # legacy key
     )
 
     # 2. Connect to Vault
@@ -1545,9 +1544,9 @@ def build_parser() -> argparse.ArgumentParser:
                        help="Secret name (default: from config or 'openclaw-agentd-secrets')")
     p_sec.add_argument("--namespace", "-n", default=None,
                        help="Kubernetes namespace (default: from config or kubeconfig context)")
-    p_sec.add_argument("--keycloak-username", default=None,
-                       help="Keycloak headless login user (default: from config or 'agentd-secrets-approver')")
-    p_sec.add_argument("--keycloak-password", default=None,
+    p_sec.add_argument("--oidc-username", default=None,
+                       help="OIDC headless login user (default: from config or 'agentd-secrets-approver')")
+    p_sec.add_argument("--oidc-password", default=None,
                        help="Password for the headless login user (default: from config oidc.password)")
     p_sec.add_argument("--force", action="store_true",
                        help="Replace the secret if it already exists")
@@ -1560,16 +1559,16 @@ def build_parser() -> argparse.ArgumentParser:
                        help="Output file path (default: stdout)")
 
     # -- vault-setup ---------------------------------------------------------
-    p_vs = subs.add_parser("vault-setup", help="Configure Vault OIDC auth against Keycloak")
+    p_vs = subs.add_parser("vault-setup", help="Configure Vault OIDC auth against OIDC provider")
     p_vs.add_argument("--vault-addr", default=None, help="Vault URL (default: from config)")
     p_vs.add_argument("--vault-token", required=True, help="Vault admin token")
     p_vs.add_argument("--oidc-mount", default=None, help="Auth mount path (default: from config)")
     p_vs.add_argument("--oidc-role", default=None, help="Vault OIDC role name")
     p_vs.add_argument("--vault-policy-name", default=None, help="Vault policy name")
-    p_vs.add_argument("--keycloak-discovery-url", default=None,
+    p_vs.add_argument("--oidc-discovery-url", default=None,
                       help="OIDC discovery/issuer URL (default: from config oidc.issuer_url)")
-    p_vs.add_argument("--keycloak-client-id", default=None, help="OIDC client id")
-    p_vs.add_argument("--keycloak-client-secret", required=True, help="OIDC client secret")
+    p_vs.add_argument("--oidc-client-id", default=None, help="OIDC client id")
+    p_vs.add_argument("--oidc-client-secret", required=True, help="OIDC client secret")
     p_vs.add_argument("--allowed-redirect-uris", default=None,
                       help=f"Comma-separated allowed redirect URIs (default: {DEFAULT_OIDC_REDIRECT_URI})")
     p_vs.add_argument("--user-claim", default=None, help="Claim identifying the user")
@@ -1580,7 +1579,7 @@ def build_parser() -> argparse.ArgumentParser:
     p_vs.add_argument("--secret-prefix", default=None, help="Prefix under KV mount")
 
     # -- sync ----------------------------------------------------------------
-    p_sync = subs.add_parser("sync", help="Sync Vault/Keycloak resources to match config")
+    p_sync = subs.add_parser("sync", help="Sync Vault/OIDC resources to match config")
     p_sync.add_argument("--vault-token", required=True, help="Vault admin token")
     p_sync.add_argument("--dry-run", action="store_true",
                         help="Show plan without applying (exit 2 on drift)")

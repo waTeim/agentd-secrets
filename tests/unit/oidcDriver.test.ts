@@ -28,10 +28,10 @@ describe('OIDC Driver', () => {
 
   describe('buildAuthURL', () => {
     const discovery: OIDCDiscovery = {
-      authorization_endpoint: 'https://keycloak.example.com/realms/test/protocol/openid-connect/auth',
-      token_endpoint: 'https://keycloak.example.com/realms/test/protocol/openid-connect/token',
-      jwks_uri: 'https://keycloak.example.com/realms/test/protocol/openid-connect/certs',
-      issuer: 'https://keycloak.example.com/realms/test',
+      authorization_endpoint: 'https://idp.example.com/realms/test/protocol/openid-connect/auth',
+      token_endpoint: 'https://idp.example.com/realms/test/protocol/openid-connect/token',
+      jwks_uri: 'https://idp.example.com/realms/test/protocol/openid-connect/certs',
+      issuer: 'https://idp.example.com/realms/test',
     };
 
     test('builds correct authorization URL', () => {

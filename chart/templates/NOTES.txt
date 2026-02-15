@@ -23,7 +23,7 @@ agentd-secrets has been deployed.
 {{- end }}
 
 2. Ensure the secret "{{ .Values.existingSecret | default (printf "%s-secrets" (include "agentd-secrets.fullname" .)) }}" contains:
-   - KEYCLOAK_CLIENT_SECRET
+   - OIDC_CLIENT_SECRET
    - WRAPTOKEN_ENC_KEY
-   - KC_APPROVER_USERNAME
-   - KC_APPROVER_PASSWORD
+   - OIDC_USERNAME
+   - OIDC_PASSWORD

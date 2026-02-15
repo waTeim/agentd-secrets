@@ -46,7 +46,7 @@ describe('PlaywrightDriver interface (mock)', () => {
   test('successful login returns code and state', async () => {
     const driver = new MockPlaywrightDriver({ shouldSucceed: true });
     const result = await driver.login(
-      'https://keycloak.example.com/auth',
+      'https://idp.example.com/auth',
       'http://localhost:8080/oidc/callback',
       'user',
       'pass',
@@ -60,7 +60,7 @@ describe('PlaywrightDriver interface (mock)', () => {
     const driver = new MockPlaywrightDriver({ shouldDeny: true });
     await expect(
       driver.login(
-        'https://keycloak.example.com/auth',
+        'https://idp.example.com/auth',
         'http://localhost:8080/oidc/callback',
         'user',
         'pass',
@@ -73,7 +73,7 @@ describe('PlaywrightDriver interface (mock)', () => {
     const driver = new MockPlaywrightDriver({ shouldSucceed: false });
     await expect(
       driver.login(
-        'https://keycloak.example.com/auth',
+        'https://idp.example.com/auth',
         'http://localhost:8080/oidc/callback',
         'user',
         'pass',

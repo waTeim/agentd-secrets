@@ -16,7 +16,7 @@ async function main() {
   const config = loadConfig();
 
   // Initialize JWT middleware
-  initJwtMiddleware(config.keycloak.issuerURL, config.keycloak.audience);
+  initJwtMiddleware(config.oidc.issuerURL, config.oidc.audience);
 
   // Initialize stores and clients
   const store = new RequestStore(config.wrapTokenEncKey);
