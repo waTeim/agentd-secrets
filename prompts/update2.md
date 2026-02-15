@@ -84,7 +84,7 @@ bots:
 
 kubernetes:
   namespace: default
-  secret_name: agentd-secrets-secrets
+  secret_name: openclaw-agentd-secrets
   # keys inside this k8s secret may include keycloak_client_secret, bot passwords, etc.
 
 The tool should accept:

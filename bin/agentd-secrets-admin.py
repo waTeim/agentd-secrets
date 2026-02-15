@@ -446,11 +446,12 @@ def cmd_init(args: argparse.Namespace) -> int:
         "oidc.client_id": "agentd-secrets",
         "oidc.client_password": "",
         "oidc.username": "agentd-secrets-approver",
+        "oidc.password": "",
         "oidc.callback_listen_host": DEFAULT_OIDC_LISTEN_HOST,
         "oidc.callback_listen_port": DEFAULT_OIDC_LISTEN_PORT,
         "oidc.callback_redirect_uri": DEFAULT_OIDC_REDIRECT_URI,
         "kubernetes.namespace": "default",
-        "kubernetes.secret_name": "agentd-secrets-secrets",
+        "kubernetes.secret_name": "openclaw-agentd-secrets",
         "playwright.headless": True,
         "playwright.browser": "chromium",
         "playwright.login_timeout": "2m",
@@ -527,15 +528,6 @@ def generate_enc_key() -> str:
     return secrets.token_hex(32)
 
 
-def validate_enc_key(value: str) -> str:
-    """Validate that a string is a 64-character hex string (32 bytes)."""
-    if not re.fullmatch(r"[0-9a-fA-F]{64}", value):
-        raise argparse.ArgumentTypeError(
-            "WRAPTOKEN_ENC_KEY must be exactly 64 hex characters (32 bytes)"
-        )
-    return value
-
-
 def build_secret(name: str, namespace: str, data: dict[str, str]):
     """Construct a V1Secret object from plain-text key/value pairs."""
     from kubernetes import client
@@ -558,8 +550,7 @@ def cmd_create_secret(args: argparse.Namespace) -> int:
     """Create the Kubernetes Secret for agentd-secrets Helm deployment.
 
     Secret keys (aligned with Helm deployment template):
-        KEYCLOAK_CLIENT_SECRET  – Keycloak confidential-client secret
-        WRAPTOKEN_ENC_KEY       – Hex-encoded 32-byte AES-256 key
+        WRAPTOKEN_ENC_KEY       – Hex-encoded 32-byte AES-256 key (auto-generated)
         KEYCLOAK_USERNAME       – Keycloak user for headless OIDC login
         KEYCLOAK_PASSWORD       – Password for the headless login user
     """
@@ -576,7 +567,7 @@ def cmd_create_secret(args: argparse.Namespace) -> int:
         k8s_config.load_kube_config()
 
     # Resolve values: CLI flags > config file > defaults
-    secret_name = args.name or deep_get(config, "kubernetes.secret_name", "agentd-secrets-secrets")
+    secret_name = args.name or deep_get(config, "kubernetes.secret_name", "openclaw-agentd-secrets")
 
     if args.namespace:
         namespace = args.namespace
@@ -601,22 +592,24 @@ def cmd_create_secret(args: argparse.Namespace) -> int:
 
     data: dict[str, str] = {}
 
-    data["KEYCLOAK_CLIENT_SECRET"] = args.keycloak_client_secret
-    print("  KEYCLOAK_CLIENT_SECRET: (provided)")
-
-    if args.generate_enc_key:
-        enc_key = generate_enc_key()
-        print(f"  WRAPTOKEN_ENC_KEY: (generated) {enc_key}")
-    else:
-        enc_key = args.wraptoken_enc_key
-        print("  WRAPTOKEN_ENC_KEY: (provided)")
+    enc_key = generate_enc_key()
     data["WRAPTOKEN_ENC_KEY"] = enc_key
+    print(f"  WRAPTOKEN_ENC_KEY: (generated) {enc_key}")
 
     data["KEYCLOAK_USERNAME"] = keycloak_username
     print(f"  KEYCLOAK_USERNAME: {keycloak_username}")
 
-    data["KEYCLOAK_PASSWORD"] = args.keycloak_password
+    keycloak_password = args.keycloak_password or deep_get(config, "oidc.password")
+    if not keycloak_password:
+        raise SystemExit("Error: keycloak password not provided (use --keycloak-password or set oidc.password in config)")
+    data["KEYCLOAK_PASSWORD"] = keycloak_password
     print("  KEYCLOAK_PASSWORD: (provided)")
+
+    if args.dry_run:
+        print(f"\n[dry-run] Would create secret '{secret_name}' in namespace '{namespace}' with keys:")
+        for k in data:
+            print(f"    {k}")
+        return 0
 
     secret = build_secret(secret_name, namespace, data)
     api = client.CoreV1Api()
@@ -639,6 +632,108 @@ def cmd_create_secret(args: argparse.Namespace) -> int:
 
     print(f"\nSet in your Helm values:")
     print(f'  existingSecret: "{secret_name}"')
+    return 0
+
+
+# ---------------------------------------------------------------------------
+# create-values subcommand
+# ---------------------------------------------------------------------------
+
+def cmd_create_values(args: argparse.Namespace) -> int:
+    """Generate a Helm values.yaml from the admin config file."""
+    config_path = Path(args.config) if args.config else default_config_path()
+    config = load_config(config_path)
+
+    target = deep_get(config, "target", {}) or {}
+
+    values: Dict[str, Any] = {}
+
+    # image
+    if target.get("registry") and target.get("image"):
+        repo = f"{target['registry']}/{target['image']}"
+        values["image"] = {"repository": repo, "tag": target.get("tag", "latest")}
+
+    # keycloak / OIDC
+    keycloak: Dict[str, Any] = {}
+    for cfg_key, val_key in [
+        ("oidc.issuer_url", "issuerURL"),
+        ("oidc.client_id", "clientID"),
+        ("oidc.realm", "realm"),
+    ]:
+        v = deep_get(config, cfg_key)
+        if v:
+            keycloak[val_key] = v
+    if deep_get(config, "oidc.client_id"):
+        keycloak["audience"] = deep_get(config, "oidc.client_id")
+    if keycloak:
+        values["keycloak"] = keycloak
+
+    # vault
+    vault: Dict[str, Any] = {}
+    for cfg_key, val_key in [
+        ("vault.addr", "addr"),
+        ("vault.oidc_mount", "oidcMount"),
+        ("vault.oidc_role", "oidcRole"),
+        ("vault.kv_mount", "kvMount"),
+        ("vault.wrap_ttl", "wrapTTL"),
+    ]:
+        v = deep_get(config, cfg_key)
+        if v:
+            vault[val_key] = v
+    if vault:
+        values["vault"] = vault
+
+    # oidcCallback
+    callback: Dict[str, Any] = {}
+    for cfg_key, val_key in [
+        ("oidc.callback_listen_host", "listenHost"),
+        ("oidc.callback_listen_port", "listenPort"),
+        ("oidc.callback_redirect_uri", "redirectURI"),
+    ]:
+        v = deep_get(config, cfg_key)
+        if v is not None:
+            callback[val_key] = v
+    if callback:
+        values["oidcCallback"] = callback
+
+    # existingSecret
+    secret_name = deep_get(config, "kubernetes.secret_name")
+    if secret_name:
+        values["existingSecret"] = secret_name
+
+    # playwright
+    pw: Dict[str, Any] = {}
+    for cfg_key, val_key in [
+        ("playwright.headless", "headless"),
+        ("playwright.browser", "browser"),
+    ]:
+        v = deep_get(config, cfg_key)
+        if v is not None:
+            pw[val_key] = str(v).lower() if isinstance(v, bool) else v
+    if pw:
+        values["playwright"] = pw
+
+    # login timeouts
+    login: Dict[str, Any] = {}
+    for cfg_key, val_key in [
+        ("playwright.login_timeout", "loginTimeout"),
+        ("playwright.duo_timeout", "duoTimeout"),
+    ]:
+        v = deep_get(config, cfg_key)
+        if v:
+            login[val_key] = v
+    if login:
+        values["login"] = login
+
+    output = yaml.dump(values, default_flow_style=False, sort_keys=False)
+
+    out_path = Path(args.output) if args.output else None
+    if out_path:
+        out_path.write_text(output)
+        print(f"Wrote {out_path}")
+    else:
+        print(output, end="")
+
     return 0
 
 
@@ -1286,14 +1381,14 @@ def cmd_sync(args: argparse.Namespace) -> int:
     kc_client_id = oidc_cfg.get("client_id", "")
 
     k8s_namespace = k8s_cfg.get("namespace", "default")
-    k8s_secret_name = k8s_cfg.get("secret_name", "agentd-secrets-secrets")
+    k8s_secret_name = k8s_cfg.get("secret_name", "openclaw-agentd-secrets")
 
     if not vault_addr:
         raise SystemExit("vault.addr is required in config")
     if not vault_token:
         raise SystemExit("--vault-token is required")
 
-    mode = "check" if args.check else ("apply" if args.apply else "plan")
+    mode = "dry-run" if args.dry_run else "apply"
     print(f"=== agentd-secrets admin — sync ({mode}) ===")
     print(f"  Vault: {vault_addr}")
     if bots:
@@ -1307,8 +1402,7 @@ def cmd_sync(args: argparse.Namespace) -> int:
         k8s_secrets = read_k8s_secret(k8s_namespace, k8s_secret_name)
 
     oidc_client_secret = (
-        args.oidc_client_secret
-        or oidc_cfg.get("client_password")
+        oidc_cfg.get("client_password")
         or k8s_secrets.get("oidc_client_secret")
         or k8s_secrets.get("keycloak_client_secret")  # legacy key
     )
@@ -1406,7 +1500,7 @@ def cmd_sync(args: argparse.Namespace) -> int:
     has_error = any(i.status == "error" for i in plan_items)
     if has_error:
         return 1
-    if mode == "check" and has_drift:
+    if mode == "dry-run" and has_drift:
         return 2
     return 0
 
@@ -1448,22 +1542,22 @@ def build_parser() -> argparse.ArgumentParser:
     # -- create-secret -------------------------------------------------------
     p_sec = subs.add_parser("create-secret", help="Create K8s Secret for Helm deployment")
     p_sec.add_argument("--name", default=None,
-                       help="Secret name (default: from config or 'agentd-secrets-secrets')")
+                       help="Secret name (default: from config or 'openclaw-agentd-secrets')")
     p_sec.add_argument("--namespace", "-n", default=None,
                        help="Kubernetes namespace (default: from config or kubeconfig context)")
-    p_sec.add_argument("--keycloak-client-secret", required=True,
-                       help="Keycloak confidential-client secret")
-    enc_grp = p_sec.add_mutually_exclusive_group(required=True)
-    enc_grp.add_argument("--wraptoken-enc-key", type=validate_enc_key,
-                         help="Hex-encoded 32-byte AES-256 key (64 hex chars)")
-    enc_grp.add_argument("--generate-enc-key", action="store_true",
-                         help="Auto-generate WRAPTOKEN_ENC_KEY")
     p_sec.add_argument("--keycloak-username", default=None,
                        help="Keycloak headless login user (default: from config or 'agentd-secrets-approver')")
-    p_sec.add_argument("--keycloak-password", required=True,
-                       help="Password for the headless login user")
+    p_sec.add_argument("--keycloak-password", default=None,
+                       help="Password for the headless login user (default: from config oidc.password)")
     p_sec.add_argument("--force", action="store_true",
                        help="Replace the secret if it already exists")
+    p_sec.add_argument("--dry-run", action="store_true",
+                       help="Show what would be created without applying")
+
+    # -- create-values -------------------------------------------------------
+    p_val = subs.add_parser("create-values", help="Generate Helm values.yaml from config")
+    p_val.add_argument("--output", "-o", default=None,
+                       help="Output file path (default: stdout)")
 
     # -- vault-setup ---------------------------------------------------------
     p_vs = subs.add_parser("vault-setup", help="Configure Vault OIDC auth against Keycloak")
@@ -1488,15 +1582,8 @@ def build_parser() -> argparse.ArgumentParser:
     # -- sync ----------------------------------------------------------------
     p_sync = subs.add_parser("sync", help="Sync Vault/Keycloak resources to match config")
     p_sync.add_argument("--vault-token", required=True, help="Vault admin token")
-    p_sync.add_argument("--oidc-client-secret", default=None,
-                        help="OIDC client secret for Vault auth config (also read from K8s secret key 'oidc_client_secret')")
-    mode_grp = p_sync.add_mutually_exclusive_group()
-    mode_grp.add_argument("--check", action="store_true",
-                          help="Read-only mode; exit 2 on drift")
-    mode_grp.add_argument("--plan", action="store_true", default=True,
-                          help="Show plan without applying (default)")
-    mode_grp.add_argument("--apply", action="store_true",
-                          help="Apply changes to match config")
+    p_sync.add_argument("--dry-run", action="store_true",
+                        help="Show plan without applying (exit 2 on drift)")
 
     return parser
 
@@ -1507,6 +1594,9 @@ def main() -> int:
     if len(sys.argv) < 2 or sys.argv[1] in ("help", "-h", "--help"):
         parser.print_help()
         return 0
+    # Intercept "<subcommand> help" — show subcommand help
+    if len(sys.argv) >= 3 and sys.argv[2] in ("help",):
+        parser.parse_args([sys.argv[1], "--help"])
     args = parser.parse_args()
 
     if not args.command:
@@ -1517,6 +1607,7 @@ def main() -> int:
         "init": cmd_init,
         "configure": cmd_configure,
         "create-secret": cmd_create_secret,
+        "create-values": cmd_create_values,
         "vault-setup": cmd_vault_setup,
         "sync": cmd_sync,
     }

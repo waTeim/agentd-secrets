@@ -285,7 +285,7 @@ bots:
 
 kubernetes:
   namespace: default
-  secret_name: agentd-secrets-secrets
+  secret_name: openclaw-agentd-secrets
 ```
 
 #### Per-Bot Isolation
@@ -391,7 +391,7 @@ helm install agentd-secrets ./chart \
   --set keycloak.clientID=agentd-secrets \
   --set vault.addr=https://vault.example.com \
   --set vault.oidcRole=agentd-secrets \
-  --set existingSecret=agentd-secrets-secrets
+  --set existingSecret=openclaw-agentd-secrets
 ```
 
 ## Troubleshooting

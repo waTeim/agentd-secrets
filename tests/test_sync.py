@@ -144,7 +144,7 @@ def make_config(
         "bots": bots,
         "kubernetes": {
             "namespace": "default",
-            "secret_name": "agentd-secrets-secrets",
+            "secret_name": "openclaw-agentd-secrets",
         },
     }
 
@@ -177,17 +177,12 @@ def make_vault_state(
 def make_args(
     config_path: str = "/tmp/test-config.yaml",
     vault_token: str = "test-token",
-    check: bool = False,
-    apply: bool = False,
-    oidc_client_secret: Optional[str] = None,
+    dry_run: bool = False,
 ) -> mock.MagicMock:
     args = mock.MagicMock()
     args.config = config_path
     args.vault_token = vault_token
-    args.check = check
-    args.apply = apply
-    args.plan = not (check or apply)
-    args.oidc_client_secret = oidc_client_secret
+    args.dry_run = dry_run
     return args
 
 
@@ -274,7 +269,7 @@ class TestFreshInstall:
     def test_fresh_install_apply(self):
         config = make_config()
         vault_state = make_vault_state(with_kv=True)  # KV exists, nothing else
-        args = make_args(apply=True)
+        args = make_args()
 
         exit_code, state, items = run_sync(config, vault_state, args)
 
@@ -315,14 +310,14 @@ class TestIdempotentApply:
     def test_idempotent(self):
         config = make_config()
         vault_state = make_vault_state(with_kv=True)
-        args = make_args(apply=True)
+        args = make_args()
 
         # First apply
         exit_code1, state, items1 = run_sync(config, vault_state, args)
         assert exit_code1 == 0
 
         # Second apply on same state
-        args2 = make_args(apply=True)
+        args2 = make_args()
         exit_code2, state, items2 = run_sync(config, state, args2)
         assert exit_code2 == 0
 
@@ -339,14 +334,14 @@ class TestDriftDetection:
         vault_state = make_vault_state(with_kv=True)
 
         # First apply
-        args_apply = make_args(apply=True)
+        args_apply = make_args()
         _, state, _ = run_sync(config, vault_state, args_apply)
 
         # Tamper with shared policy
         state["policies"]["agentd-secrets-shared-read"] = "# tampered policy"
 
         # Check mode
-        args_check = make_args(check=True)
+        args_check = make_args(dry_run=True)
         exit_code, _, items = run_sync(config, state, args_check)
 
         assert exit_code == 2
@@ -362,7 +357,7 @@ class TestDriftApply:
         vault_state = make_vault_state(with_kv=True)
 
         # First apply
-        args_apply = make_args(apply=True)
+        args_apply = make_args()
         _, state, _ = run_sync(config, vault_state, args_apply)
 
         # Tamper with bot policy
@@ -373,7 +368,7 @@ class TestDriftApply:
         role_data["bound_claims"] = {"preferred_username": "wrong-user"}
 
         # Apply again
-        args_apply2 = make_args(apply=True)
+        args_apply2 = make_args()
         exit_code, state, items = run_sync(config, state, args_apply2)
 
         assert exit_code == 0
@@ -395,7 +390,7 @@ class TestCheckModeOutput:
         vault_state = make_vault_state(with_kv=True)
 
         # Run check on empty Vault (everything missing)
-        args = make_args(check=True)
+        args = make_args(dry_run=True)
         exit_code, _, items = run_sync(config, vault_state, args)
 
         assert exit_code == 2  # drift detected
@@ -422,7 +417,7 @@ class TestMultiBotIsolation:
         config = make_config()
         vault_state = make_vault_state(with_kv=True)
 
-        args = make_args(apply=True)
+        args = make_args()
         _, state, _ = run_sync(config, vault_state, args)
 
         openclaw_hcl = state["policies"]["agentd-secrets-bot-openclaw"]
@@ -445,7 +440,7 @@ class TestMultiBotIsolation:
         config = make_config()
         vault_state = make_vault_state(with_kv=True)
 
-        args = make_args(apply=True)
+        args = make_args()
         _, state, _ = run_sync(config, vault_state, args)
 
         shared_hcl = state["policies"]["agentd-secrets-shared-read"]
@@ -457,7 +452,7 @@ class TestMultiBotIsolation:
         config = make_config()
         vault_state = make_vault_state(with_kv=True)
 
-        args = make_args(apply=True)
+        args = make_args()
         _, state, _ = run_sync(config, vault_state, args)
 
         openclaw_role = state["data"]["auth/wyrd_auth/role/openclaw"]["data"]
@@ -473,7 +468,7 @@ class TestKVMountChecks:
     def test_kv_mount_missing_check(self):
         config = make_config()
         vault_state = make_vault_state(with_kv=False)
-        args = make_args(check=True)
+        args = make_args(dry_run=True)
 
         exit_code, _, items = run_sync(config, vault_state, args)
 
@@ -485,7 +480,7 @@ class TestKVMountChecks:
     def test_kv_mount_created_on_apply(self):
         config = make_config()
         vault_state = make_vault_state(with_kv=False)
-        args = make_args(apply=True)
+        args = make_args()
 
         exit_code, state, items = run_sync(config, vault_state, args)
 
@@ -501,7 +496,7 @@ class TestKVMountChecks:
             "options": {"version": "1"},
         }
         config = make_config()
-        args = make_args(check=True)
+        args = make_args(dry_run=True)
 
         exit_code, _, items = run_sync(config, vault_state, args)
 
@@ -560,7 +555,7 @@ class TestOIDCRolePrefix:
         config = make_config()
         config["vault"]["oidc_role_prefix"] = "xp-"
         vault_state = make_vault_state(with_kv=True)
-        args = make_args(apply=True)
+        args = make_args()
 
         _, state, _ = run_sync(config, vault_state, args)
 
