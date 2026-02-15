@@ -210,7 +210,7 @@ The broker stores a real Keycloak user's password (`KEYCLOAK_PASSWORD`) in a Kub
 The `bin/agentd-secrets-admin.py` script provides a unified CLI for setup and deployment:
 
 ```bash
-# Discover Vault config and write agentd-secrets-admin.yaml
+# Discover Vault config and write agentd-secrets-config.yaml
 bin/agentd-secrets-admin.py init --vault-addr https://vault.example.com --vault-token hvs.xxx
 
 # Configure build settings (registry, image, tag)

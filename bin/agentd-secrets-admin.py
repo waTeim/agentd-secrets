@@ -3,8 +3,8 @@
 agentd-secrets admin — unified CLI for agentd-secrets deployment tasks.
 
 Subcommands:
-    init            Query Vault and auto-populate agentd-secrets-admin.yaml
-    configure       Set target image config; writes agentd-secrets-admin.yaml + build-config.json
+    init            Query Vault and auto-populate agentd-secrets-config.yaml
+    configure       Set target image config; writes agentd-secrets-config.yaml + build-config.json
     create-secret   Create the Kubernetes Secret for Helm deployment
     vault-setup     Configure Vault OIDC auth against Keycloak
 
@@ -33,7 +33,7 @@ try:
 except ImportError:
     yaml = None
 
-CONFIG_FILE = "agentd-secrets-admin.yaml"
+CONFIG_FILE = "agentd-secrets-config.yaml"
 BUILD_CONFIG_FILE = "build-config.json"
 
 # Default OIDC callback settings (Vault CLI-style localhost listener)
@@ -442,6 +442,7 @@ def cmd_init(args: argparse.Namespace) -> int:
         "vault.kv_mount": "secret",
         "vault.secret_prefix": "agentd-secrets",
         "vault.wrap_ttl": "300s",
+        "oidc.issuer_url": "",
         "oidc.client_id": "agentd-secrets",
         "oidc.client_password": "",
         "oidc.username": "agentd-secrets-approver",
@@ -1136,167 +1137,53 @@ def check_oidc_role(
 
 # -- Keycloak admin client --------------------------------------------------
 
-class KeycloakAdminClient:
-    """Minimal Keycloak Admin REST API client using client credentials grant."""
+# -- OIDC discovery check ---------------------------------------------------
 
-    def __init__(self, base_url: str, realm: str, client_id: str, client_secret: str):
-        import requests as _requests
-        self._session = _requests.Session()
-        self._base_url = base_url.rstrip("/")
-        self._realm = realm
-        self._client_id = client_id
-        self._client_secret = client_secret
-        self._token: Optional[str] = None
+def check_oidc_discovery(issuer_url: str) -> PlanItem:
+    """Validate OIDC issuer using only public endpoints.
 
-    def get_admin_token(self) -> str:
-        if self._token:
-            return self._token
-        token_url = f"{self._base_url}/realms/{self._realm}/protocol/openid-connect/token"
-        resp = self._session.post(token_url, data={
-            "grant_type": "client_credentials",
-            "client_id": self._client_id,
-            "client_secret": self._client_secret,
-        })
-        resp.raise_for_status()
-        self._token = resp.json()["access_token"]
-        return self._token
-
-    def _admin_headers(self) -> Dict[str, str]:
-        return {"Authorization": f"Bearer {self.get_admin_token()}"}
-
-    def _admin_url(self, path: str) -> str:
-        return f"{self._base_url}/admin/realms/{self._realm}/{path.lstrip('/')}"
-
-    def find_client_by_client_id(self, client_id: str) -> Optional[Dict[str, Any]]:
-        resp = self._session.get(
-            self._admin_url("clients"),
-            params={"clientId": client_id},
-            headers=self._admin_headers(),
-        )
-        resp.raise_for_status()
-        clients = resp.json()
-        for c in clients:
-            if c.get("clientId") == client_id:
-                return c
-        return None
-
-    def get_client_redirect_uris(self, internal_id: str) -> List[str]:
-        resp = self._session.get(
-            self._admin_url(f"clients/{internal_id}"),
-            headers=self._admin_headers(),
-        )
-        resp.raise_for_status()
-        return resp.json().get("redirectUris", [])
-
-    def update_client_redirect_uris(self, internal_id: str, uris: List[str]) -> None:
-        resp = self._session.put(
-            self._admin_url(f"clients/{internal_id}"),
-            json={"redirectUris": uris},
-            headers=self._admin_headers(),
-        )
-        resp.raise_for_status()
-
-    def find_user_by_username(self, username: str) -> Optional[Dict[str, Any]]:
-        resp = self._session.get(
-            self._admin_url("users"),
-            params={"username": username, "exact": "true"},
-            headers=self._admin_headers(),
-        )
-        resp.raise_for_status()
-        users = resp.json()
-        for u in users:
-            if u.get("username") == username:
-                return u
-        return None
-
-    def create_user(self, username: str, password: str, email: Optional[str] = None) -> None:
-        payload: Dict[str, Any] = {
-            "username": username,
-            "enabled": True,
-            "credentials": [{"type": "password", "value": password, "temporary": False}],
-        }
-        if email:
-            payload["email"] = email
-        resp = self._session.post(
-            self._admin_url("users"),
-            json=payload,
-            headers=self._admin_headers(),
-        )
-        resp.raise_for_status()
-
-
-# -- Keycloak check functions -----------------------------------------------
-
-def check_kc_issuer(issuer_url: str) -> PlanItem:
-    """Basic connectivity check: fetch .well-known/openid-configuration."""
+    Checks:
+      1. .well-known/openid-configuration is reachable
+      2. 'issuer' field matches issuer_url
+      3. authorization_endpoint, token_endpoint, jwks_uri are present
+      4. JWKS endpoint returns at least one key
+    """
     import requests as _requests
     well_known = f"{issuer_url.rstrip('/')}/.well-known/openid-configuration"
     try:
         resp = _requests.get(well_known, timeout=10)
         resp.raise_for_status()
         data = resp.json()
-        if data.get("issuer"):
-            return PlanItem("kc_issuer", issuer_url, "ok")
-        return PlanItem("kc_issuer", issuer_url, "error", "no 'issuer' in response")
     except Exception as e:
-        return PlanItem("kc_issuer", issuer_url, "error", f"connectivity check failed: {e}")
+        return PlanItem("oidc_discovery", issuer_url, "error", f"failed to fetch discovery doc: {e}")
 
+    problems: List[str] = []
 
-def check_kc_client(
-    kc_admin: KeycloakAdminClient, client_id: str, required_redirect_uris: List[str],
-) -> PlanItem:
-    """Verify Keycloak client exists and has required redirect URIs."""
+    # issuer must match
+    discovered_issuer = data.get("issuer", "")
+    if discovered_issuer.rstrip("/") != issuer_url.rstrip("/"):
+        problems.append(f"issuer mismatch: expected {issuer_url!r}, got {discovered_issuer!r}")
+
+    # Required endpoints
+    for field in ("authorization_endpoint", "token_endpoint", "jwks_uri"):
+        if not data.get(field):
+            problems.append(f"missing {field}")
+
+    if problems:
+        return PlanItem("oidc_discovery", issuer_url, "error", "\n".join(problems))
+
+    # Fetch JWKS to prove key material is available
+    jwks_uri = data["jwks_uri"]
     try:
-        kc_client = kc_admin.find_client_by_client_id(client_id)
+        jwks_resp = _requests.get(jwks_uri, timeout=10)
+        jwks_resp.raise_for_status()
+        keys = jwks_resp.json().get("keys", [])
+        if not keys:
+            return PlanItem("oidc_discovery", issuer_url, "error", f"JWKS at {jwks_uri} has no keys")
     except Exception as e:
-        return PlanItem("kc_client", client_id, "error", f"failed to query client: {e}")
+        return PlanItem("oidc_discovery", issuer_url, "error", f"failed to fetch JWKS: {e}")
 
-    if not kc_client:
-        return PlanItem("kc_client", client_id, "missing", f"client '{client_id}' not found in Keycloak")
-
-    internal_id = kc_client["id"]
-    current_uris = kc_client.get("redirectUris", [])
-    missing_uris = [u for u in required_redirect_uris if u not in current_uris]
-
-    if not missing_uris:
-        return PlanItem("kc_client", client_id, "ok")
-
-    def _apply():
-        updated = list(set(current_uris + required_redirect_uris))
-        kc_admin.update_client_redirect_uris(internal_id, updated)
-
-    return PlanItem(
-        "kc_client", client_id, "drift",
-        f"missing redirect URIs: {missing_uris}",
-        _apply,
-    )
-
-
-def check_kc_user(
-    kc_admin: KeycloakAdminClient,
-    username: str,
-    password: Optional[str] = None,
-    email: Optional[str] = None,
-) -> PlanItem:
-    """Verify Keycloak user exists; apply_fn creates if password available."""
-    try:
-        user = kc_admin.find_user_by_username(username)
-    except Exception as e:
-        return PlanItem("kc_user", username, "error", f"failed to query user: {e}")
-
-    if user:
-        return PlanItem("kc_user", username, "ok")
-
-    if not password:
-        return PlanItem(
-            "kc_user", username, "missing",
-            f"user '{username}' not found; no password available to create",
-        )
-
-    def _apply():
-        kc_admin.create_user(username, password, email=email)
-
-    return PlanItem("kc_user", username, "missing", f"user '{username}' will be created", _apply)
+    return PlanItem("oidc_discovery", issuer_url, "ok")
 
 
 # -- K8s secret reader ------------------------------------------------------
@@ -1331,11 +1218,14 @@ def print_plan(plan_items: List[PlanItem]) -> None:
             print(header)
             continue
         diff_lines = item.diff.split("\n")
-        prefix = f"{header}  — "
-        print(f"{prefix}{diff_lines[0]}")
-        indent = " " * len(prefix)
-        for line in diff_lines[1:]:
-            print(f"{indent}{line}")
+        if len(diff_lines) == 1:
+            print(f"{header}  — {diff_lines[0]}")
+        else:
+            print(header)
+            detail_indent = " " * 30
+            for line in diff_lines:
+                if line:
+                    print(f"{detail_indent}  {line}")
 
 
 def apply_plan(plan_items: List[PlanItem]) -> int:
@@ -1497,32 +1387,9 @@ def cmd_sync(args: argparse.Namespace) -> int:
         }
         plan_items.append(check_oidc_role(client, oidc_mount, role_name, expected_role))
 
-    # 8. Keycloak checks (if issuer_url and admin secret available)
+    # 8. OIDC discovery check (public endpoints only)
     if issuer_url:
-        plan_items.append(check_kc_issuer(issuer_url))
-
-        if oidc_client_secret and kc_client_id:
-            # Derive realm and base_url from issuer_url
-            m = re.search(r"^(https?://[^/]+)/realms/([^/]+)/?$", issuer_url)
-            if m:
-                kc_base_url = m.group(1)
-                kc_realm = m.group(2)
-                try:
-                    kc_admin = KeycloakAdminClient(kc_base_url, kc_realm, kc_client_id, oidc_client_secret)
-                    plan_items.append(check_kc_client(kc_admin, kc_client_id, allowed_redirect_uris))
-
-                    for bot in bots:
-                        username = bot.get("approver_username")
-                        if username:
-                            bot_password = k8s_secrets.get(f"bot_{bot['name']}_password")
-                            plan_items.append(check_kc_user(
-                                kc_admin, username, password=bot_password,
-                                email=bot.get("approver_email"),
-                            ))
-                except Exception as e:
-                    plan_items.append(PlanItem(
-                        "kc_admin", "keycloak", "error", f"failed to connect: {e}",
-                    ))
+        plan_items.append(check_oidc_discovery(issuer_url))
 
     # 9. Print plan
     print()
@@ -1636,6 +1503,10 @@ def build_parser() -> argparse.ArgumentParser:
 
 def main() -> int:
     parser = build_parser()
+    # Intercept "help" before argparse rejects it as an unknown subcommand
+    if len(sys.argv) < 2 or sys.argv[1] in ("help", "-h", "--help"):
+        parser.print_help()
+        return 0
     args = parser.parse_args()
 
     if not args.command:

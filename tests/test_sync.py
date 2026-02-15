@@ -104,72 +104,6 @@ class MockVaultClient:
 # Mock Keycloak responses
 # ---------------------------------------------------------------------------
 
-class MockKCResponse:
-    def __init__(self, json_data=None, status_code=200):
-        self._json = json_data or {}
-        self.status_code = status_code
-
-    def raise_for_status(self):
-        if self.status_code >= 400:
-            raise Exception(f"HTTP {self.status_code}")
-
-    def json(self):
-        return self._json
-
-
-class MockKCSession:
-    """Mock requests.Session for Keycloak admin API."""
-
-    def __init__(self, state: dict):
-        self._state = state  # {"clients": [...], "users": [...]}
-
-    def post(self, url: str, data=None, json=None, headers=None):
-        if "/protocol/openid-connect/token" in url:
-            return MockKCResponse({"access_token": "mock-token"})
-        if "/admin/realms/" in url and url.endswith("/users"):
-            user_data = json or {}
-            self._state.setdefault("users", []).append({
-                "id": f"user-{len(self._state.get('users', []))}",
-                "username": user_data.get("username"),
-                "email": user_data.get("email"),
-                "enabled": True,
-            })
-            return MockKCResponse(status_code=201)
-        return MockKCResponse()
-
-    def get(self, url: str, params=None, headers=None):
-        if "/admin/realms/" in url and "/clients" in url and not url.endswith("/clients"):
-            # GET single client by internal id
-            internal_id = url.rsplit("/", 1)[-1]
-            for c in self._state.get("clients", []):
-                if c["id"] == internal_id:
-                    return MockKCResponse(c)
-            return MockKCResponse(status_code=404)
-        if "/admin/realms/" in url and "/clients" in url:
-            client_id_filter = (params or {}).get("clientId")
-            clients = self._state.get("clients", [])
-            if client_id_filter:
-                clients = [c for c in clients if c.get("clientId") == client_id_filter]
-            return MockKCResponse(clients)
-        if "/admin/realms/" in url and "/users" in url:
-            username_filter = (params or {}).get("username")
-            users = self._state.get("users", [])
-            if username_filter:
-                users = [u for u in users if u.get("username") == username_filter]
-            return MockKCResponse(users)
-        return MockKCResponse()
-
-    def put(self, url: str, json=None, headers=None):
-        if "/admin/realms/" in url and "/clients/" in url:
-            internal_id = url.rsplit("/", 1)[-1]
-            for c in self._state.get("clients", []):
-                if c["id"] == internal_id:
-                    if json and "redirectUris" in json:
-                        c["redirectUris"] = json["redirectUris"]
-                    return MockKCResponse()
-        return MockKCResponse()
-
-
 # ---------------------------------------------------------------------------
 # Test configuration
 # ---------------------------------------------------------------------------
@@ -265,7 +199,6 @@ def run_sync(
     config: dict,
     vault_state: dict,
     args: Optional[mock.MagicMock] = None,
-    kc_state: Optional[dict] = None,
     k8s_secrets: Optional[dict] = None,
 ) -> tuple:
     """Run cmd_sync with mocked dependencies. Returns (exit_code, vault_state, plan_items)."""
@@ -275,6 +208,12 @@ def run_sync(
     mock_client = MockVaultClient(vault_state)
     captured_plan_items: List[xpass_admin.PlanItem] = []
 
+    original_print_plan = xpass_admin.print_plan
+
+    def capture_print_plan(items):
+        captured_plan_items.extend(items)
+        original_print_plan(items)
+
     # Patch load_config
     with mock.patch.object(xpass_admin, "load_config", return_value=config):
         # Patch hvac.Client
@@ -283,41 +222,13 @@ def run_sync(
             with mock.patch.object(
                 xpass_admin, "read_k8s_secret", return_value=k8s_secrets or {}
             ):
-                # Patch check_kc_issuer (network call)
+                # Patch check_oidc_discovery (network call)
                 with mock.patch.object(
-                    xpass_admin, "check_kc_issuer",
-                    return_value=xpass_admin.PlanItem("kc_issuer", config.get("oidc", {}).get("issuer_url", ""), "ok"),
+                    xpass_admin, "check_oidc_discovery",
+                    return_value=xpass_admin.PlanItem("oidc_discovery", config.get("oidc", {}).get("issuer_url", ""), "ok"),
                 ):
-                    # Patch KeycloakAdminClient to use mock session
-                    if kc_state is not None and args.oidc_client_secret:
-                        mock_session = MockKCSession(kc_state)
-                        original_init = xpass_admin.KeycloakAdminClient.__init__
-
-                        def patched_init(self, base_url, realm, client_id, client_secret):
-                            original_init(self, base_url, realm, client_id, client_secret)
-                            self._session = mock_session
-
-                        with mock.patch.object(
-                            xpass_admin.KeycloakAdminClient, "__init__", patched_init,
-                        ):
-                            # Capture plan items via print_plan
-                            original_print_plan = xpass_admin.print_plan
-
-                            def capture_print_plan(items):
-                                captured_plan_items.extend(items)
-                                original_print_plan(items)
-
-                            with mock.patch.object(xpass_admin, "print_plan", capture_print_plan):
-                                exit_code = xpass_admin.cmd_sync(args)
-                    else:
-                        original_print_plan = xpass_admin.print_plan
-
-                        def capture_print_plan(items):
-                            captured_plan_items.extend(items)
-                            original_print_plan(items)
-
-                        with mock.patch.object(xpass_admin, "print_plan", capture_print_plan):
-                            exit_code = xpass_admin.cmd_sync(args)
+                    with mock.patch.object(xpass_admin, "print_plan", capture_print_plan):
+                        exit_code = xpass_admin.cmd_sync(args)
 
     return exit_code, vault_state, captured_plan_items
 
@@ -556,118 +467,6 @@ class TestMultiBotIsolation:
         assert roadrunner_role["policies"] == ["agentd-secrets-bot-roadrunner"]
 
 
-class TestKeycloakChecks:
-    """Test Keycloak client and user verification."""
-
-    def test_kc_client_redirect_uri_drift(self):
-        """Client exists but missing a redirect URI."""
-        kc_state = {
-            "clients": [
-                {
-                    "id": "internal-1",
-                    "clientId": "agentd-secrets",
-                    "redirectUris": ["https://other.example.com/callback"],
-                }
-            ],
-            "users": [
-                {"id": "u1", "username": "openclaw-approver"},
-                {"id": "u2", "username": "roadrunner-approver"},
-            ],
-        }
-
-        config = make_config()
-        vault_state = make_vault_state(with_kv=True, with_oidc_mount=True)
-        args = make_args(check=True, oidc_client_secret="kc-secret")
-
-        exit_code, _, items = run_sync(config, vault_state, args, kc_state=kc_state)
-
-        kc_client_items = [i for i in items if i.kind == "kc_client"]
-        assert len(kc_client_items) == 1
-        assert kc_client_items[0].status == "drift"
-        assert "redirect" in kc_client_items[0].diff.lower()
-
-    def test_kc_client_ok(self):
-        """Client exists with correct redirect URIs."""
-        kc_state = {
-            "clients": [
-                {
-                    "id": "internal-1",
-                    "clientId": "agentd-secrets",
-                    "redirectUris": ["http://localhost:8250/oidc/callback"],
-                }
-            ],
-            "users": [
-                {"id": "u1", "username": "openclaw-approver"},
-                {"id": "u2", "username": "roadrunner-approver"},
-            ],
-        }
-
-        config = make_config()
-        vault_state = make_vault_state(with_kv=True, with_oidc_mount=True)
-        args = make_args(check=True, oidc_client_secret="kc-secret")
-
-        exit_code, _, items = run_sync(config, vault_state, args, kc_state=kc_state)
-
-        kc_client_items = [i for i in items if i.kind == "kc_client"]
-        assert len(kc_client_items) == 1
-        assert kc_client_items[0].status == "ok"
-
-    def test_kc_user_missing(self):
-        """User does not exist in Keycloak."""
-        kc_state = {
-            "clients": [
-                {
-                    "id": "internal-1",
-                    "clientId": "agentd-secrets",
-                    "redirectUris": ["http://localhost:8250/oidc/callback"],
-                }
-            ],
-            "users": [],  # No users
-        }
-
-        config = make_config()
-        vault_state = make_vault_state(with_kv=True, with_oidc_mount=True)
-        args = make_args(check=True, oidc_client_secret="kc-secret")
-
-        exit_code, _, items = run_sync(config, vault_state, args, kc_state=kc_state)
-
-        kc_user_items = [i for i in items if i.kind == "kc_user"]
-        assert len(kc_user_items) == 2
-        assert all(i.status == "missing" for i in kc_user_items)
-
-    def test_kc_user_created_on_apply(self):
-        """User is created when apply mode and password available."""
-        kc_state = {
-            "clients": [
-                {
-                    "id": "internal-1",
-                    "clientId": "agentd-secrets",
-                    "redirectUris": ["http://localhost:8250/oidc/callback"],
-                }
-            ],
-            "users": [],
-        }
-        k8s_secrets = {
-            "keycloak_client_secret": "kc-secret",
-            "bot_openclaw_password": "pass1",
-            "bot_roadrunner_password": "pass2",
-        }
-
-        config = make_config()
-        vault_state = make_vault_state(with_kv=True, with_oidc_mount=True)
-        args = make_args(apply=True, oidc_client_secret="kc-secret")
-
-        exit_code, _, items = run_sync(
-            config, vault_state, args, kc_state=kc_state, k8s_secrets=k8s_secrets,
-        )
-
-        assert exit_code == 0
-        # Users should have been created
-        created_usernames = [u["username"] for u in kc_state["users"]]
-        assert "openclaw-approver" in created_usernames
-        assert "roadrunner-approver" in created_usernames
-
-
 class TestKVMountChecks:
     """Test KV mount verification."""
 
@@ -734,6 +533,24 @@ class TestPlanItem:
         assert "[drift]" in out
         assert "[missing]" in out
         assert "HCL differs" in out
+
+    def test_print_plan_multiline_diff(self, capsys):
+        """Multi-line diffs print each field on its own indented line."""
+        items = [
+            xpass_admin.PlanItem(
+                "oidc_config", "auth/oidc/config", "missing",
+                "oidc_discovery_url: None -> 'https://example.com/realms/master'\noidc_client_id: None -> 'agentd-secrets'",
+            ),
+        ]
+        xpass_admin.print_plan(items)
+        out = capsys.readouterr().out
+        lines = out.strip().split("\n")
+        # Header on its own line, then each diff field on a separate line
+        assert len(lines) == 3
+        assert "[missing]" in lines[0]
+        assert "auth/oidc/config" in lines[0]
+        assert "oidc_discovery_url:" in lines[1]
+        assert "oidc_client_id:" in lines[2]
 
 
 class TestOIDCRolePrefix:
