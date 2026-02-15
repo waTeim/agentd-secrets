@@ -123,15 +123,20 @@ def make_config(
         "vault": {
             "addr": "https://vault.example.com",
             "oidc_mount": oidc_mount,
+            "oidc_role": "agentd-secrets",
             "oidc_role_prefix": "",
-            "allowed_redirect_uris": "http://localhost:8250/oidc/callback",
-            "user_claim": "preferred_username",
-            "bound_claim_key": "preferred_username",
-            "token_ttl": "15m",
+            "policy_name": "agentd-secrets-read",
             "kv_mount": kv_mount,
             "kv_version": 2,
             "secret_prefix": secret_prefix,
             "wrap_ttl": "300s",
+            "role": {
+                "allowed_redirect_uris": "http://localhost:8250/oidc/callback",
+                "user_claim": "preferred_username",
+                "bound_claim_key": "preferred_username",
+                "bound_claim_value": "agentd-secrets-approver",
+                "token_ttl": "15m",
+            },
             "policies": {
                 "shared_policy_name": "agentd-secrets-shared-read",
                 "bot_policy_prefix": "agentd-secrets-bot-",
@@ -140,6 +145,10 @@ def make_config(
         "oidc": {
             "issuer_url": "https://idp.example.com/realms/REALM",
             "client_id": "agentd-secrets",
+            "bound_issuer": "",
+            "response_types": "code",
+            "supported_algs": "RS256",
+            "scopes": "openid,profile,email",
         },
         "bots": bots,
         "kubernetes": {
@@ -190,6 +199,14 @@ def make_args(
 # Helper to run sync with mocked deps
 # ---------------------------------------------------------------------------
 
+MOCK_DISCOVERY_DATA = {
+    "issuer": "https://idp.example.com/realms/REALM",
+    "jwks_uri": "https://idp.example.com/realms/REALM/protocol/openid-connect/certs",
+    "authorization_endpoint": "https://idp.example.com/realms/REALM/protocol/openid-connect/auth",
+    "token_endpoint": "https://idp.example.com/realms/REALM/protocol/openid-connect/token",
+}
+
+
 def run_sync(
     config: dict,
     vault_state: dict,
@@ -222,8 +239,13 @@ def run_sync(
                     xpass_admin, "check_oidc_discovery",
                     return_value=xpass_admin.PlanItem("oidc_discovery", config.get("oidc", {}).get("issuer_url", ""), "ok"),
                 ):
-                    with mock.patch.object(xpass_admin, "print_plan", capture_print_plan):
-                        exit_code = xpass_admin.cmd_sync(args)
+                    # Patch fetch_oidc_discovery (network call)
+                    with mock.patch.object(
+                        xpass_admin, "fetch_oidc_discovery",
+                        return_value=MOCK_DISCOVERY_DATA,
+                    ):
+                        with mock.patch.object(xpass_admin, "print_plan", capture_print_plan):
+                            exit_code = xpass_admin.cmd_sync(args)
 
     return exit_code, vault_state, captured_plan_items
 
@@ -562,3 +584,48 @@ class TestOIDCRolePrefix:
         # Roles should be prefixed
         assert "auth/wyrd_auth/role/xp-openclaw" in state["data"]
         assert "auth/wyrd_auth/role/xp-roadrunner" in state["data"]
+
+
+class TestSingleProfile:
+    """Test sync without bots creates single policy + role."""
+
+    def test_single_profile_created(self):
+        config = make_config(bots=[])
+        vault_state = make_vault_state(with_kv=True)
+        args = make_args()
+
+        exit_code, state, items = run_sync(config, vault_state, args)
+
+        assert exit_code == 0
+
+        # Single policy was created (from vault.policy_name)
+        assert "agentd-secrets-read" in state["policies"]
+        policy_hcl = state["policies"]["agentd-secrets-read"]
+        assert 'path "projects/data/agentd-secrets/*"' in policy_hcl
+
+        # Single role was created (from vault.oidc_role)
+        assert "auth/wyrd_auth/role/agentd-secrets" in state["data"]
+        role_data = state["data"]["auth/wyrd_auth/role/agentd-secrets"]["data"]
+        assert role_data["policies"] == ["agentd-secrets-read"]
+        assert role_data["bound_claims"] == {"preferred_username": "agentd-secrets-approver"}
+        assert role_data["user_claim"] == "preferred_username"
+        assert role_data["oidc_scopes"] == ["openid", "profile", "email"]
+
+        # No shared/bot policies should exist
+        assert "agentd-secrets-shared-read" not in state["policies"]
+
+    def test_single_profile_idempotent(self):
+        config = make_config(bots=[])
+        vault_state = make_vault_state(with_kv=True)
+        args = make_args()
+
+        # First apply
+        _, state, _ = run_sync(config, vault_state, args)
+
+        # Second apply
+        args2 = make_args()
+        exit_code, state, items = run_sync(config, state, args2)
+
+        assert exit_code == 0
+        non_ok = [i for i in items if i.status not in ("ok", "info")]
+        assert len(non_ok) == 0, f"Non-ok items: {[(i.kind, i.name, i.status, i.diff) for i in non_ok]}"

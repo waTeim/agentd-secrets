@@ -7,7 +7,7 @@ import { PlaywrightDriver } from './playwrightDriver';
 import { VaultClient } from './vaultClient';
 import { VaultOidcManager } from './auth/vaultOidcCliFlow';
 import { Worker } from './worker';
-import { createApiRouter, createHealthRouter } from './routes';
+import { createApiRouter, createHealthRouter, createDiagRouter } from './routes';
 import logger from './logger';
 
 async function main() {
@@ -71,6 +71,7 @@ async function main() {
   // Mount routes
   app.use(createHealthRouter(config, vaultClient));
   app.use(createApiRouter(config, store, worker));
+  app.use(createDiagRouter(config, vaultClient, oidcManager));
 
   // Start server
   const server = app.listen(config.listenPort, () => {

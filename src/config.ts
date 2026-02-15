@@ -28,7 +28,6 @@ export interface Config {
     issuerURL: string;
     realm: string;
     clientID: string;
-    clientSecret: string;
     audience: string;
   };
   vault: {
@@ -99,12 +98,17 @@ export function ttlToVaultString(ms: number): string {
 }
 
 function loadServiceRegistry(configPath: string): ServiceRegistry {
-  const raw = fs.readFileSync(configPath, 'utf-8');
-  const parsed = yaml.load(raw) as ServiceRegistry;
-  if (!parsed || !parsed.services) {
-    throw new Error(`Invalid service registry at ${configPath}: missing 'services' key`);
+  if (!fs.existsSync(configPath)) {
+    logger.warn(`Service registry not found at ${configPath}, starting with empty registry`);
+    return { services: {} };
   }
-  return parsed;
+  const raw = fs.readFileSync(configPath, 'utf-8');
+  const parsed = yaml.load(raw) as Record<string, unknown> | null;
+  if (!parsed || typeof parsed !== 'object') {
+    logger.warn(`Service registry at ${configPath} is empty, starting with empty registry`);
+    return { services: {} };
+  }
+  return { services: (parsed.services as Record<string, ServiceEntry>) || {} };
 }
 
 function requireEnv(name: string): string {
@@ -132,7 +136,6 @@ export function loadConfig(): Config {
       issuerURL: requireEnv('OIDC_ISSUER_URL'),
       realm: process.env.OIDC_REALM || '',
       clientID: requireEnv('OIDC_CLIENT_ID'),
-      clientSecret: requireEnv('OIDC_CLIENT_SECRET'),
       audience: process.env.OIDC_AUDIENCE || '',
     },
     vault: {

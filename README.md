@@ -109,7 +109,6 @@ Readiness probe. Returns `200` if OIDC discovery and Vault `sys/health` are reac
 | `OIDC_ISSUER_URL` | Yes | -- | OIDC realm issuer URL |
 | `OIDC_REALM` | No | `""` | OIDC realm name |
 | `OIDC_CLIENT_ID` | Yes | -- | Broker's OIDC client ID |
-| `OIDC_CLIENT_SECRET` | Yes | -- | Broker's OIDC client secret |
 | `OIDC_AUDIENCE` | No | `""` | Expected JWT audience claim |
 | `VAULT_ADDR` | Yes | -- | Vault server address |
 | `VAULT_OIDC_MOUNT` | No | `oidc` | Vault OIDC auth method mount path |
@@ -235,17 +234,11 @@ See `bin/agentd-secrets-admin.py --help` for full usage.
 The `sync` subcommand reads a declarative YAML config and ensures Vault policies, OIDC roles, and OIDC users match the desired state. It supports multi-bot isolation where each bot gets its own scoped credentials.
 
 ```bash
-# Show planned changes (default)
+# Apply changes (default)
 bin/agentd-secrets-admin.py sync --vault-token $VAULT_TOKEN
 
-# Read-only check, exit code 2 if drift detected
-bin/agentd-secrets-admin.py sync --vault-token $VAULT_TOKEN --check
-
-# Apply changes
-bin/agentd-secrets-admin.py sync --vault-token $VAULT_TOKEN --apply
-
-# With OIDC client secret (needed for Vault OIDC config + IdP admin checks)
-bin/agentd-secrets-admin.py sync --vault-token $VAULT_TOKEN --oidc-client-secret $OIDC_CLIENT_SECRET --apply
+# Dry run — show plan without applying (exit 2 on drift)
+bin/agentd-secrets-admin.py sync --vault-token $VAULT_TOKEN --dry-run
 ```
 
 #### Example Config (2 bots)

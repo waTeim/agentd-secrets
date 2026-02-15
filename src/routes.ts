@@ -5,6 +5,7 @@ import { Worker } from './worker';
 import { jwtMiddleware } from './jwtMiddleware';
 import { checkOidcReachable } from './oidcDriver';
 import { VaultClient } from './vaultClient';
+import { VaultOidcManager } from './auth/vaultOidcCliFlow';
 import logger from './logger';
 
 export function createApiRouter(
@@ -106,6 +107,96 @@ export function createHealthRouter(config: Config, vaultClient: VaultClient): Ro
     } catch (err) {
       logger.error('Readiness check error', { error: (err as Error).message });
       res.status(503).json({ status: 'not ready', error: (err as Error).message });
+    }
+  });
+
+  return router;
+}
+
+export function createDiagRouter(
+  config: Config,
+  vaultClient: VaultClient,
+  oidcManager: VaultOidcManager,
+): Router {
+  const router = Router();
+
+  // POST /diag/test-login — trigger OIDC login flow to obtain a Vault token
+  router.post('/diag/test-login', async (_req: Request, res: Response) => {
+    try {
+      logger.info('Diag: triggering OIDC login flow');
+      await oidcManager.ensureToken();
+      res.json({
+        status: 'ok',
+        tokenValid: vaultClient.isTokenValid(),
+      });
+    } catch (err) {
+      logger.error('Diag: login failed', { error: (err as Error).message });
+      res.status(500).json({ error: (err as Error).message });
+    }
+  });
+
+  // GET /diag/token-status — check cached Vault token validity
+  router.get('/diag/token-status', (_req: Request, res: Response) => {
+    res.json({ tokenValid: vaultClient.isTokenValid() });
+  });
+
+  // GET /diag/config — show non-sensitive config values
+  router.get('/diag/config', (_req: Request, res: Response) => {
+    res.json({
+      oidc: {
+        issuerURL: config.oidc.issuerURL,
+        clientID: config.oidc.clientID,
+        audience: config.oidc.audience,
+      },
+      vault: {
+        addr: config.vault.addr,
+        oidcMount: config.vault.oidcMount,
+        oidcRole: config.vault.oidcRole,
+        kvMount: config.vault.kvMount,
+        wrapTTL: config.vault.wrapTTL,
+      },
+      services: Object.keys(config.serviceRegistry.services),
+      listenAddr: config.listenAddr,
+    });
+  });
+
+  // POST /diag/test-read — attempt a Vault KV read for a registered service
+  router.post('/diag/test-read', async (req: Request, res: Response) => {
+    try {
+      const { service } = req.body;
+      const serviceNames = Object.keys(config.serviceRegistry.services);
+
+      if (!service && serviceNames.length === 0) {
+        res.status(400).json({ error: 'No services registered and no service specified' });
+        return;
+      }
+
+      const targetService = service || serviceNames[0];
+      const entry = validateServiceExists(config, targetService);
+      if (!entry) {
+        res.status(404).json({ error: `Service '${targetService}' not found` });
+        return;
+      }
+
+      logger.info('Diag: test-read', { service: targetService, path: entry.vault.kv2_path });
+      await oidcManager.ensureToken();
+      const wrapInfo = await vaultClient.readWrapped(
+        entry.vault.kv2_mount,
+        entry.vault.kv2_path,
+        config.vault.wrapTTL,
+      );
+      res.json({
+        status: 'ok',
+        service: targetService,
+        wrapInfo: {
+          token: wrapInfo.token.substring(0, 8) + '...',
+          ttl: wrapInfo.ttl,
+          creationTime: wrapInfo.creation_time,
+        },
+      });
+    } catch (err) {
+      logger.error('Diag: test-read failed', { error: (err as Error).message });
+      res.status(500).json({ error: (err as Error).message });
     }
   });
 

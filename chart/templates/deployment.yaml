@@ -52,11 +52,6 @@ spec:
               value: {{ .Values.oidc.clientID | quote }}
             - name: OIDC_REALM
               value: {{ .Values.oidc.realm | quote }}
-            - name: OIDC_CLIENT_SECRET
-              valueFrom:
-                secretKeyRef:
-                  name: {{ .Values.existingSecret | default (printf "%s-secrets" (include "agentd-secrets.fullname" .)) }}
-                  key: OIDC_CLIENT_SECRET
             # -- Vault (OIDC auth — Vault CLI-style localhost flow)
             - name: VAULT_ADDR
               value: {{ .Values.vault.addr | quote }}
@@ -106,6 +101,8 @@ spec:
               readOnly: true
             - name: tmp
               mountPath: /tmp
+            - name: home
+              mountPath: /home/agentd
           livenessProbe:
             httpGet:
               path: /healthz
@@ -127,6 +124,9 @@ spec:
         - name: tmp
           emptyDir:
             sizeLimit: 500Mi
+        - name: home
+          emptyDir:
+            sizeLimit: 100Mi
       {{- with .Values.nodeSelector }}
       nodeSelector:
         {{- toYaml . | nindent 8 }}

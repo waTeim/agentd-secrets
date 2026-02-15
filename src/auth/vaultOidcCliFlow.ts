@@ -306,6 +306,11 @@ export class VaultOidcManager {
     );
     const callbackPromise = listener.start();
 
+    // Attach a no-op catch so the callback promise never produces an
+    // unhandled rejection if the browser login fails first.  The real
+    // error handling happens below; this just prevents a Node crash.
+    callbackPromise.catch(() => {});
+
     try {
       // Step 3: Drive Playwright through OIDC login
       logger.info('Driving headless browser for OIDC login');
@@ -345,7 +350,10 @@ export class VaultOidcManager {
         policies: authResult.auth.policies,
       });
     } catch (err) {
+      // Stop the listener first, then swallow the now-orphaned callback
+      // promise rejection so it doesn't surface as an unhandled rejection.
       await listener.stop().catch(() => {});
+      await callbackPromise.catch(() => {});
       throw err;
     } finally {
       await listener.stop().catch(() => {});

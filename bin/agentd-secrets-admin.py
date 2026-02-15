@@ -137,6 +137,14 @@ def _unwrap(response: Any) -> Any:
     return response
 
 
+def normalize_host(host: str) -> str:
+    """Normalize a listen-host value.  Accept '*' as shorthand for 0.0.0.0."""
+    h = host.strip()
+    if h in ("*", ""):
+        return "0.0.0.0"
+    return h
+
+
 def normalize_mount(mount: str) -> str:
     return mount.strip().rstrip("/")
 
@@ -155,6 +163,35 @@ def norm_list(x: Any) -> List[str]:
     if isinstance(x, str):
         return [p.strip() for p in x.split(",") if p.strip()]
     return [str(x)]
+
+
+def fetch_oidc_discovery(issuer_url: str) -> Dict[str, Any]:
+    """Fetch OIDC discovery document from the issuer's well-known endpoint.
+
+    Returns parsed JSON with at least: issuer, jwks_uri,
+    authorization_endpoint, token_endpoint.
+    Raises SystemExit on failure with actionable error.
+    """
+    import requests as _requests
+    well_known = f"{issuer_url.rstrip('/')}/.well-known/openid-configuration"
+    try:
+        resp = _requests.get(well_known, timeout=10)
+        resp.raise_for_status()
+        data = resp.json()
+    except Exception as e:
+        raise SystemExit(
+            f"Failed to fetch OIDC discovery from {well_known}: {e}\n"
+            f"Verify that oidc.issuer_url ({issuer_url}) is reachable."
+        )
+
+    required = ("issuer", "jwks_uri", "authorization_endpoint", "token_endpoint")
+    missing = [f for f in required if not data.get(f)]
+    if missing:
+        raise SystemExit(
+            f"OIDC discovery document at {well_known} is missing required fields: {', '.join(missing)}"
+        )
+
+    return data
 
 
 # ---------------------------------------------------------------------------
@@ -366,8 +403,8 @@ def cmd_init(args: argparse.Namespace) -> int:
             redirect_uris = norm_list(role_data.get("allowed_redirect_uris"))
             if redirect_uris:
                 val = ",".join(redirect_uris)
-                print(f"  [discovered] vault.allowed_redirect_uris = {val}")
-                deep_set(config, "vault.allowed_redirect_uris", val)
+                print(f"  [discovered] vault.role.allowed_redirect_uris = {val}")
+                deep_set(config, "vault.role.allowed_redirect_uris", val)
                 # Derive oidc_callback settings from the first localhost URI
                 for uri in redirect_uris:
                     if "localhost" in uri or "127.0.0.1" in uri:
@@ -377,7 +414,7 @@ def cmd_init(args: argparse.Namespace) -> int:
                             parsed = urlparse(uri)
                             if parsed.port:
                                 deep_set(config, "oidc.callback_listen_port", parsed.port)
-                            deep_set(config, "oidc.callback_listen_host", parsed.hostname or DEFAULT_OIDC_LISTEN_HOST)
+                            deep_set(config, "oidc.callback_listen_host", normalize_host(parsed.hostname or DEFAULT_OIDC_LISTEN_HOST))
                         except Exception:
                             pass
                         print(f"  [derived]    oidc.callback_redirect_uri = {uri}")
@@ -385,8 +422,8 @@ def cmd_init(args: argparse.Namespace) -> int:
 
             user_claim = role_data.get("user_claim")
             if user_claim:
-                print(f"  [discovered] vault.user_claim = {user_claim}")
-                deep_set(config, "vault.user_claim", user_claim)
+                print(f"  [discovered] vault.role.user_claim = {user_claim}")
+                deep_set(config, "vault.role.user_claim", user_claim)
 
             bound_claims = role_data.get("bound_claims") or {}
             if bound_claims:
@@ -394,15 +431,15 @@ def cmd_init(args: argparse.Namespace) -> int:
                 value = bound_claims[key]
                 if isinstance(value, list):
                     value = value[0] if value else ""
-                print(f"  [discovered] vault.bound_claim_key = {key}")
-                print(f"  [discovered] vault.bound_claim_value = {value}")
-                deep_set(config, "vault.bound_claim_key", key)
-                deep_set(config, "vault.bound_claim_value", value)
+                print(f"  [discovered] vault.role.bound_claim_key = {key}")
+                print(f"  [discovered] vault.role.bound_claim_value = {value}")
+                deep_set(config, "vault.role.bound_claim_key", key)
+                deep_set(config, "vault.role.bound_claim_value", value)
 
             ttl = role_data.get("ttl")
             if ttl:
-                print(f"  [discovered] vault.token_ttl = {ttl}")
-                deep_set(config, "vault.token_ttl", ttl)
+                print(f"  [discovered] vault.role.token_ttl = {ttl}")
+                deep_set(config, "vault.role.token_ttl", ttl)
         else:
             print(f"  [not found]  role '{oidc_role}' not configured yet")
     except Exception as e:
@@ -434,17 +471,21 @@ def cmd_init(args: argparse.Namespace) -> int:
         "vault.oidc_mount": "oidc",
         "vault.oidc_role": "agentd-secrets",
         "vault.policy_name": "agentd-secrets-read",
-        "vault.allowed_redirect_uris": DEFAULT_OIDC_REDIRECT_URI,
-        "vault.user_claim": "preferred_username",
-        "vault.bound_claim_key": "preferred_username",
-        "vault.bound_claim_value": "agentd-secrets-approver",
-        "vault.token_ttl": "15m",
         "vault.kv_mount": "secret",
         "vault.secret_prefix": "agentd-secrets",
         "vault.wrap_ttl": "300s",
+        "vault.role.allowed_redirect_uris": DEFAULT_OIDC_REDIRECT_URI,
+        "vault.role.user_claim": "preferred_username",
+        "vault.role.bound_claim_key": "preferred_username",
+        "vault.role.bound_claim_value": "agentd-secrets-approver",
+        "vault.role.token_ttl": "15m",
         "oidc.issuer_url": "",
         "oidc.client_id": "agentd-secrets",
         "oidc.client_password": "",
+        "oidc.bound_issuer": "",
+        "oidc.response_types": "code",
+        "oidc.supported_algs": "RS256",
+        "oidc.scopes": "openid,profile,email",
         "oidc.username": "agentd-secrets-approver",
         "oidc.password": "",
         "oidc.callback_listen_host": DEFAULT_OIDC_LISTEN_HOST,
@@ -692,6 +733,8 @@ def cmd_create_values(args: argparse.Namespace) -> int:
     ]:
         v = deep_get(config, cfg_key)
         if v is not None:
+            if val_key == "listenHost":
+                v = normalize_host(str(v))
             callback[val_key] = v
     if callback:
         values["oidcCallback"] = callback
@@ -795,22 +838,64 @@ def ensure_oidc_config(
     client_id: str,
     client_secret: str,
     default_role: str,
+    discovery_data: Optional[Dict[str, Any]] = None,
+    bound_issuer: str = "",
+    jwks_url: str = "",
+    response_types: str = "code",
+    supported_algs: str = "RS256",
 ) -> None:
-    desired = {
-        "oidc_discovery_url": discovery_url,
+    # Derive bound_issuer from discovery if not overridden
+    if discovery_data:
+        if not bound_issuer:
+            bound_issuer = discovery_data.get("issuer", "")
+
+    oidc_response_types = listify(response_types)
+    jwt_supported_algs = listify(supported_algs)
+
+    # Vault requires exactly ONE of: oidc_discovery_url, jwks_url,
+    # jwt_validation_pubkeys, or jwks_pairs.  When oidc_discovery_url is set
+    # Vault derives jwks_uri from the discovery doc, so we must NOT also
+    # send jwks_url.  Only use jwks_url when there is no discovery URL.
+    desired: Dict[str, Any] = {
         "oidc_client_id": client_id,
         "oidc_client_secret": client_secret,
         "default_role": default_role,
+        "bound_issuer": bound_issuer,
+        "oidc_response_types": oidc_response_types,
+        "jwt_supported_algs": jwt_supported_algs,
     }
+    if discovery_url:
+        desired["oidc_discovery_url"] = discovery_url
+    elif jwks_url:
+        desired["jwks_url"] = jwks_url
 
     current = read_oidc_config(client, mount_point) or {}
 
-    same_non_secret = (
-        current.get("oidc_discovery_url") == desired["oidc_discovery_url"]
-        and current.get("oidc_client_id") == desired["oidc_client_id"]
-        and current.get("default_role") == desired["default_role"]
-    )
-    if same_non_secret:
+    # Compare all non-secret fields
+    non_secret_keys = [
+        "oidc_client_id", "default_role",
+        "bound_issuer", "oidc_response_types", "jwt_supported_algs",
+    ]
+    if discovery_url:
+        non_secret_keys.append("oidc_discovery_url")
+    elif jwks_url:
+        non_secret_keys.append("jwks_url")
+
+    same = True
+    for key in non_secret_keys:
+        cur = current.get(key)
+        exp = desired[key]
+        # Normalize list comparison
+        if isinstance(exp, list):
+            if sorted(norm_list(cur)) != sorted(exp):
+                same = False
+                break
+        else:
+            if cur != exp:
+                same = False
+                break
+
+    if same:
         print(f"[ok] oidc config looks correct (non-secret fields) at auth/{mount_point}/config")
         return
 
@@ -838,7 +923,10 @@ def ensure_oidc_role(
     bound_claims: Dict[str, str],
     policies: List[str],
     ttl: str,
+    oidc_scopes: Optional[List[str]] = None,
 ) -> None:
+    if oidc_scopes is None:
+        oidc_scopes = ["openid", "profile", "email"]
     desired = {
         "role_type": "oidc",
         "allowed_redirect_uris": allowed_redirect_uris,
@@ -847,7 +935,7 @@ def ensure_oidc_role(
         "bound_claims": bound_claims,
         "policies": policies,
         "ttl": ttl,
-        "oidc_scopes": ["openid", "profile", "email"],
+        "oidc_scopes": oidc_scopes,
     }
 
     current = read_oidc_role(client, mount_point, role_name) or {}
@@ -859,6 +947,7 @@ def ensure_oidc_role(
         "bound_claims": current.get("bound_claims") or {},
         "policies": sorted(norm_list(current.get("policies"))),
         "ttl": current.get("ttl"),
+        "oidc_scopes": sorted(norm_list(current.get("oidc_scopes"))),
     }
     comparable_desired = {
         "allowed_redirect_uris": sorted(desired["allowed_redirect_uris"]),
@@ -867,6 +956,7 @@ def ensure_oidc_role(
         "bound_claims": desired["bound_claims"],
         "policies": sorted(desired["policies"]),
         "ttl": desired["ttl"],
+        "oidc_scopes": sorted(desired["oidc_scopes"]),
     }
 
     if comparable_current == comparable_desired:
@@ -921,15 +1011,15 @@ def cmd_vault_setup(args: argparse.Namespace) -> int:
 
     allowed_redirect_uris = pick(
         args.allowed_redirect_uris,
-        "vault.allowed_redirect_uris",
+        "vault.role.allowed_redirect_uris",
         DEFAULT_OIDC_REDIRECT_URI,
     )
 
-    user_claim = pick(args.user_claim, "vault.user_claim", "preferred_username")
-    bound_claim_key = pick(args.bound_claim_key, "vault.bound_claim_key", "preferred_username")
-    bound_claim_value = pick(args.bound_claim_value, "vault.bound_claim_value", "agentd-secrets-approver")
+    user_claim = pick(args.user_claim, "vault.role.user_claim", "preferred_username")
+    bound_claim_key = pick(args.bound_claim_key, "vault.role.bound_claim_key", "preferred_username")
+    bound_claim_value = pick(args.bound_claim_value, "vault.role.bound_claim_value", "agentd-secrets-approver")
 
-    token_ttl = pick(args.token_ttl, "vault.token_ttl", "15m")
+    token_ttl = pick(args.token_ttl, "vault.role.token_ttl", "15m")
 
     kv_mount = pick(args.kv_mount, "vault.kv_mount", "secret")
     secret_prefix = pick(args.secret_prefix, "vault.secret_prefix", "agentd-secrets")
@@ -957,12 +1047,24 @@ def cmd_vault_setup(args: argparse.Namespace) -> int:
 
     policy_hcl = build_policy_hcl(str(kv_mount), str(secret_prefix))
 
+    # Resolve OIDC config overrides
+    bound_issuer_override = pick(None, "oidc.bound_issuer", "")
+    response_types = pick(None, "oidc.response_types", "code")
+    supported_algs = pick(None, "oidc.supported_algs", "RS256")
+    oidc_scopes = pick(None, "oidc.scopes", "openid,profile,email")
+
     vc = hvac.Client(url=str(vault_addr), token=str(vault_token))
     if not vc.is_authenticated():
         raise SystemExit("Vault authentication failed (check vault addr/token).")
 
     print("=== agentd-secrets admin — vault-setup ===")
     print(f"[info] connected to Vault at {vault_addr}")
+
+    # Fetch OIDC discovery
+    print(f"[info] fetching OIDC discovery from {oidc_discovery_url}")
+    discovery_data = fetch_oidc_discovery(str(oidc_discovery_url))
+    print(f"[info] discovered issuer: {discovery_data['issuer']}")
+    print(f"[info] discovered jwks_uri: {discovery_data['jwks_uri']}")
 
     ensure_oidc_auth_enabled(vc, mount_point)
     ensure_policy(vc, str(vault_policy_name), policy_hcl)
@@ -973,7 +1075,15 @@ def cmd_vault_setup(args: argparse.Namespace) -> int:
         str(oidc_client_id),
         str(oidc_client_secret),
         str(oidc_role),
+        discovery_data=discovery_data,
+        bound_issuer=str(bound_issuer_override),
+        response_types=str(response_types),
+        supported_algs=str(supported_algs),
     )
+
+    # Parse oidc_scopes for the role
+    role_oidc_scopes = listify(str(oidc_scopes))
+
     ensure_oidc_role(
         client=vc,
         mount_point=mount_point,
@@ -984,12 +1094,16 @@ def cmd_vault_setup(args: argparse.Namespace) -> int:
         bound_claims={str(bound_claim_key): str(bound_claim_value)},
         policies=[str(vault_policy_name)],
         ttl=str(token_ttl),
+        oidc_scopes=role_oidc_scopes,
     )
+
+    effective_issuer = bound_issuer_override or discovery_data.get("issuer", "")
 
     print(f"\n[done] Vault OIDC configuration complete.")
     print(f"  auth mount:    {mount_point}/")
     print(f"  role:          {oidc_role}")
     print(f"  policy:        {vault_policy_name}")
+    print(f"  bound_issuer:  {effective_issuer}")
     print(f"  bound claim:   {bound_claim_key} == {bound_claim_value}")
     print(f"  redirect uris: {', '.join(uri_list)}")
     print(f"\nIMPORTANT: Ensure OIDC provider client '{oidc_client_id}' also lists")
@@ -1124,9 +1238,23 @@ def check_oidc_auth_mount(client, oidc_mount: str) -> PlanItem:
 
 
 def check_oidc_config(
-    client, oidc_mount: str, issuer_url: str, client_id: str, client_secret: Optional[str],
+    client,
+    oidc_mount: str,
+    issuer_url: str,
+    client_id: str,
+    client_secret: Optional[str],
+    bound_issuer: str = "",
+    oidc_response_types: Optional[List[str]] = None,
+    jwt_supported_algs: Optional[List[str]] = None,
+    default_role: str = "",
+    jwks_url: str = "",
 ) -> PlanItem:
-    """Compare non-secret OIDC config fields; apply_fn writes config."""
+    """Compare non-secret OIDC config fields; apply_fn writes complete config."""
+    if oidc_response_types is None:
+        oidc_response_types = ["code"]
+    if jwt_supported_algs is None:
+        jwt_supported_algs = ["RS256"]
+
     current = read_oidc_config(client, oidc_mount) or {}
 
     diffs: List[str] = []
@@ -1134,6 +1262,12 @@ def check_oidc_config(
         diffs.append(f"oidc_discovery_url: {current.get('oidc_discovery_url')!r} -> {issuer_url!r}")
     if current.get("oidc_client_id") != client_id:
         diffs.append(f"oidc_client_id: {current.get('oidc_client_id')!r} -> {client_id!r}")
+    if current.get("bound_issuer") != bound_issuer:
+        diffs.append(f"bound_issuer: {current.get('bound_issuer')!r} -> {bound_issuer!r}")
+    if sorted(norm_list(current.get("oidc_response_types"))) != sorted(oidc_response_types):
+        diffs.append(f"oidc_response_types: {current.get('oidc_response_types')!r} -> {oidc_response_types!r}")
+    if sorted(norm_list(current.get("jwt_supported_algs"))) != sorted(jwt_supported_algs):
+        diffs.append(f"jwt_supported_algs: {current.get('jwt_supported_algs')!r} -> {jwt_supported_algs!r}")
 
     if not diffs and current.get("oidc_discovery_url"):
         return PlanItem("oidc_config", f"auth/{oidc_mount}/config", "ok")
@@ -1141,10 +1275,19 @@ def check_oidc_config(
     status = "drift" if current.get("oidc_discovery_url") else "missing"
 
     def _apply():
-        payload = {
-            "oidc_discovery_url": issuer_url,
+        payload: Dict[str, Any] = {
             "oidc_client_id": client_id,
+            "bound_issuer": bound_issuer,
+            "oidc_response_types": oidc_response_types,
+            "jwt_supported_algs": jwt_supported_algs,
         }
+        # Vault requires exactly ONE key source; never send both
+        if issuer_url:
+            payload["oidc_discovery_url"] = issuer_url
+        elif jwks_url:
+            payload["jwks_url"] = jwks_url
+        if default_role:
+            payload["default_role"] = default_role
         if client_secret:
             payload["oidc_client_secret"] = client_secret
         client.write(f"auth/{oidc_mount}/config", **payload)
@@ -1195,12 +1338,12 @@ def check_oidc_role(
     diffs: List[str] = []
     compare_keys = [
         "allowed_redirect_uris", "bound_audiences", "user_claim",
-        "bound_claims", "policies", "ttl",
+        "bound_claims", "policies", "ttl", "oidc_scopes",
     ]
     for key in compare_keys:
         cur_val = current.get(key)
         exp_val = expected.get(key)
-        if key in ("allowed_redirect_uris", "bound_audiences", "policies"):
+        if key in ("allowed_redirect_uris", "bound_audiences", "policies", "oidc_scopes"):
             if _norm(cur_val) != _norm(exp_val):
                 diffs.append(f"{key}: {cur_val!r} -> {exp_val!r}")
         elif key == "bound_claims":
@@ -1364,14 +1507,20 @@ def cmd_sync(args: argparse.Namespace) -> int:
     vault_addr = vault_cfg.get("addr")
     vault_token = args.vault_token
     oidc_mount = normalize_mount(vault_cfg.get("oidc_mount", "oidc"))
+    oidc_role_name = vault_cfg.get("oidc_role", "agentd-secrets")
     oidc_role_prefix = vault_cfg.get("oidc_role_prefix", "")
-    allowed_redirect_uris = listify(vault_cfg.get("allowed_redirect_uris", DEFAULT_OIDC_REDIRECT_URI))
-    user_claim = vault_cfg.get("user_claim", "preferred_username")
-    bound_claim_key = vault_cfg.get("bound_claim_key", "preferred_username")
-    token_ttl = vault_cfg.get("token_ttl", "15m")
+    policy_name = vault_cfg.get("policy_name", "agentd-secrets-read")
     kv_mount = vault_cfg.get("kv_mount", "secret")
     kv_version = vault_cfg.get("kv_version", 2)
     secret_prefix = vault_cfg.get("secret_prefix", "agentd-secrets")
+
+    # Role defaults (from vault.role section)
+    role_cfg = vault_cfg.get("role", {})
+    allowed_redirect_uris = listify(role_cfg.get("allowed_redirect_uris", DEFAULT_OIDC_REDIRECT_URI))
+    user_claim = role_cfg.get("user_claim", "preferred_username")
+    bound_claim_key = role_cfg.get("bound_claim_key", "preferred_username")
+    bound_claim_value = role_cfg.get("bound_claim_value", "agentd-secrets-approver")
+    token_ttl = role_cfg.get("token_ttl", "15m")
 
     policies_cfg = vault_cfg.get("policies", {})
     shared_policy_name = policies_cfg.get("shared_policy_name", "agentd-secrets-shared-read")
@@ -1379,6 +1528,13 @@ def cmd_sync(args: argparse.Namespace) -> int:
 
     issuer_url = oidc_cfg.get("issuer_url", "")
     kc_client_id = oidc_cfg.get("client_id", "")
+
+    # OIDC config settings (from oidc section)
+    bound_issuer_override = oidc_cfg.get("bound_issuer", "")
+    response_types_str = oidc_cfg.get("response_types", "code")
+    supported_algs_str = oidc_cfg.get("supported_algs", "RS256")
+    oidc_scopes_str = oidc_cfg.get("scopes", "openid,profile,email")
+    oidc_scopes_list = listify(oidc_scopes_str)
 
     k8s_namespace = k8s_cfg.get("namespace", "default")
     k8s_secret_name = k8s_cfg.get("secret_name", "openclaw-agentd-secrets")
@@ -1434,10 +1590,31 @@ def cmd_sync(args: argparse.Namespace) -> int:
     # -- vault.token_ttl --
     plan_items.append(PlanItem("config", "vault.token_ttl", "info", token_ttl))
 
+    # -- OIDC discovery (fetch issuer + jwks_uri for config) --
+    discovery_data: Optional[Dict[str, Any]] = None
+    if issuer_url:
+        try:
+            discovery_data = fetch_oidc_discovery(issuer_url)
+        except SystemExit:
+            # Discovery failure is not fatal for sync; check_oidc_discovery will report it
+            pass
+
+    # Derive bound_issuer from discovery or config override
+    effective_bound_issuer = bound_issuer_override
+    if discovery_data:
+        if not effective_bound_issuer:
+            effective_bound_issuer = discovery_data.get("issuer", "")
+
+    oidc_response_types = listify(response_types_str)
+    jwt_supported_algs = listify(supported_algs_str)
+
     # -- oidc config (issuer_url + client_id) --
     if issuer_url and kc_client_id:
         plan_items.append(check_oidc_config(
             client, oidc_mount, issuer_url, kc_client_id, oidc_client_secret,
+            bound_issuer=effective_bound_issuer,
+            oidc_response_types=oidc_response_types,
+            jwt_supported_algs=jwt_supported_algs,
         ))
     elif issuer_url or kc_client_id:
         plan_items.append(PlanItem(
@@ -1445,40 +1622,59 @@ def cmd_sync(args: argparse.Namespace) -> int:
             f"both oidc.issuer_url and oidc.client_id are required (have issuer_url={issuer_url!r}, client_id={kc_client_id!r})",
         ))
 
-    # -- vault.policies.shared_policy_name --
-    shared_hcl = build_shared_policy_hcl(kv_mount, secret_prefix)
-    plan_items.append(check_policy(client, shared_policy_name, shared_hcl))
-    # -- vault.policies.bot_policy_prefix --
-    plan_items.append(PlanItem("config", "vault.policies.bot_policy_prefix", "info", bot_policy_prefix))
+    if bots:
+        # -- multi-bot mode: shared policy + per-bot policies/roles --
+        shared_hcl = build_shared_policy_hcl(kv_mount, secret_prefix)
+        plan_items.append(check_policy(client, shared_policy_name, shared_hcl))
+        plan_items.append(PlanItem("config", "vault.policies.bot_policy_prefix", "info", bot_policy_prefix))
 
-    # -- per-bot checks --
-    for bot in bots:
-        bot_name = bot["name"]
-        bot_policy_name = f"{bot_policy_prefix}{bot_name}"
-        role_name = f"{oidc_role_prefix}{bot_name}"
+        for bot in bots:
+            bot_name = bot["name"]
+            bot_policy_name = f"{bot_policy_prefix}{bot_name}"
+            role_name = f"{oidc_role_prefix}{bot_name}"
 
-        # Bot policy
-        bot_hcl = build_bot_policy_hcl(kv_mount, secret_prefix, bot_name)
-        plan_items.append(check_policy(client, bot_policy_name, bot_hcl))
+            # Bot policy
+            bot_hcl = build_bot_policy_hcl(kv_mount, secret_prefix, bot_name)
+            plan_items.append(check_policy(client, bot_policy_name, bot_hcl))
 
-        # OIDC role
-        bound_claims: Dict[str, Any] = {}
-        if bound_claim_key == "preferred_username" and bot.get("approver_username"):
-            bound_claims[bound_claim_key] = bot["approver_username"]
-        elif bound_claim_key == "email" and bot.get("approver_email"):
-            bound_claims[bound_claim_key] = bot["approver_email"]
-        elif bot.get("approver_username"):
-            bound_claims[bound_claim_key] = bot["approver_username"]
+            # OIDC role
+            bound_claims: Dict[str, Any] = {}
+            if bound_claim_key == "preferred_username" and bot.get("approver_username"):
+                bound_claims[bound_claim_key] = bot["approver_username"]
+            elif bound_claim_key == "email" and bot.get("approver_email"):
+                bound_claims[bound_claim_key] = bot["approver_email"]
+            elif bot.get("approver_username"):
+                bound_claims[bound_claim_key] = bot["approver_username"]
 
-        expected_role = {
+            expected_role = {
+                "allowed_redirect_uris": allowed_redirect_uris,
+                "bound_audiences": [kc_client_id] if kc_client_id else [],
+                "user_claim": user_claim,
+                "bound_claims": bound_claims,
+                "policies": [bot_policy_name],
+                "ttl": token_ttl,
+                "oidc_scopes": oidc_scopes_list,
+            }
+            plan_items.append(check_oidc_role(client, oidc_mount, role_name, expected_role))
+    else:
+        # -- single-profile mode: one policy + one role from vault config --
+        single_hcl = build_policy_hcl(kv_mount, secret_prefix)
+        plan_items.append(check_policy(client, policy_name, single_hcl))
+
+        bound_claims_single: Dict[str, Any] = {}
+        if bound_claim_key and bound_claim_value:
+            bound_claims_single[bound_claim_key] = bound_claim_value
+
+        expected_single_role = {
             "allowed_redirect_uris": allowed_redirect_uris,
             "bound_audiences": [kc_client_id] if kc_client_id else [],
             "user_claim": user_claim,
-            "bound_claims": bound_claims,
-            "policies": [bot_policy_name],
+            "bound_claims": bound_claims_single,
+            "policies": [policy_name],
             "ttl": token_ttl,
+            "oidc_scopes": oidc_scopes_list,
         }
-        plan_items.append(check_oidc_role(client, oidc_mount, role_name, expected_role))
+        plan_items.append(check_oidc_role(client, oidc_mount, oidc_role_name, expected_single_role))
 
     # 8. OIDC discovery check (public endpoints only)
     if issuer_url:

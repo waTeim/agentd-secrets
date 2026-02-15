@@ -36,18 +36,24 @@ RUN apt-get update && apt-get install -y --no-install-recommends \
     ca-certificates \
     && rm -rf /var/lib/apt/lists/*
 
+# Create a named non-root user for the runtime process (fixed UID/GID for K8s)
+RUN groupadd --gid 1500 agentd && \
+    useradd --uid 1500 --gid 1500 --create-home --shell /usr/sbin/nologin agentd
+
 WORKDIR /app
 
 COPY package.json package-lock.json ./
 RUN npm ci --omit=dev --ignore-scripts
 
-# Install Playwright browsers (chromium only)
+# Install Playwright browsers (chromium only) into a fixed path
+ENV PLAYWRIGHT_BROWSERS_PATH=/usr/local/lib/pw-browsers
 RUN npx playwright install chromium
 
 COPY --from=builder /app/dist ./dist
 
-# Run as non-root (matches Helm chart podSecurityContext)
-USER 65534:65534
+RUN chown -R agentd:agentd /app
+
+USER agentd
 
 EXPOSE 8080
 

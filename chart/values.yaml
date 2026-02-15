@@ -21,8 +21,8 @@ podAnnotations: {}
 
 podSecurityContext:
   runAsNonRoot: true
-  runAsUser: 65534
-  fsGroup: 65534
+  runAsUser: 1500
+  fsGroup: 1500
 
 securityContext:
   allowPrivilegeEscalation: false
@@ -84,7 +84,7 @@ oidcCallback:
   redirectURI: "http://localhost:8250/oidc/callback"
 
 # -- Name of an existing Secret containing sensitive env vars.
-# Must contain keys: OIDC_CLIENT_SECRET, WRAPTOKEN_ENC_KEY, OIDC_USERNAME, OIDC_PASSWORD
+# Must contain keys: WRAPTOKEN_ENC_KEY, OIDC_USERNAME, OIDC_PASSWORD
 existingSecret: ""
 
 # -- Headless OIDC login timing

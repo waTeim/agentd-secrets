@@ -108,7 +108,6 @@ describe('API Integration Tests', () => {
     process.env.OIDC_ISSUER_URL = `http://127.0.0.1:${oidcPort}/realms/test`;
     process.env.OIDC_REALM = 'test';
     process.env.OIDC_CLIENT_ID = 'agentd-secrets';
-    process.env.OIDC_CLIENT_SECRET = 'test-secret';
     process.env.OIDC_AUDIENCE = audience;
     process.env.VAULT_ADDR = `http://127.0.0.1:${vaultPort}`;
     process.env.VAULT_OIDC_MOUNT = 'oidc';

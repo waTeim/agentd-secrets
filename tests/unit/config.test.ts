@@ -11,7 +11,6 @@ describe('Config', () => {
       OIDC_ISSUER_URL: 'https://idp.example.com/realms/myrealm',
       OIDC_REALM: 'myrealm',
       OIDC_CLIENT_ID: 'agentd-secrets',
-      OIDC_CLIENT_SECRET: 'test-secret',
       OIDC_AUDIENCE: 'agentd-secrets',
       VAULT_ADDR: 'https://vault.example.com',
       VAULT_OIDC_MOUNT: 'oidc',
@@ -64,10 +63,11 @@ describe('Config', () => {
     expect(() => loadConfig()).toThrow('64 hex characters');
   });
 
-  test('loadConfig throws on missing config file', () => {
+  test('loadConfig succeeds with missing config file (empty registry)', () => {
     process.env.BROKER_CONFIG_PATH = '/nonexistent/path.yaml';
     const { loadConfig } = require('../../src/config');
-    expect(() => loadConfig()).toThrow();
+    const config = loadConfig();
+    expect(config.serviceRegistry.services).toEqual({});
   });
 });
 
@@ -113,7 +113,6 @@ describe('validateServiceExists', () => {
       ...originalEnv,
       OIDC_ISSUER_URL: 'https://idp.example.com/realms/myrealm',
       OIDC_CLIENT_ID: 'agentd-secrets',
-      OIDC_CLIENT_SECRET: 'secret',
       VAULT_ADDR: 'https://vault.example.com',
       WRAPTOKEN_ENC_KEY: 'a'.repeat(64),
       BROKER_CONFIG_PATH: fixtureConfig,
