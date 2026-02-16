@@ -1,0 +1,22 @@
+# Intent-to-service inference map
+#
+# Maps natural language phrases to broker service names.
+# Used by the auto-infer feature (disabled by default in config.yaml).
+# Matching is case-insensitive substring.
+#
+# To extend: add new phrase -> service entries below.
+# Service names must match entries in the broker's service registry
+# (check GET / on the broker for available services).
+
+inference_map:
+  # Google
+  "use your google account": "logins/google"
+  "log in to google": "logins/google"
+  "google credentials": "logins/google"
+  "sign in to google": "logins/google"
+
+  # GitHub
+  "deploy using github": "logins/github"
+  "github credentials": "logins/github"
+  "push to github": "logins/github"
+  "github token": "logins/github"

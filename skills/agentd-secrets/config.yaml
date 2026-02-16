@@ -1,0 +1,22 @@
+# agentd-secrets skill configuration
+
+# Auto-infer: map natural language intent to service names
+# Disabled by default -- enable explicitly after review
+# See references/inference-map.yaml for the full phrase-to-service mapping
+enable_auto_infer: false
+
+# Request defaults
+default_wrap_ttl: "1m"
+default_requester: "agent"
+poll_interval: 3
+poll_timeout: 900
+max_retries: 2
+
+# Storage policy: "ephemeral" means secrets are printed to stdout only
+storage: "ephemeral"
+
+# Audit log (append-only)
+audit_log: "/tmp/agentd-secrets-audit.log"
+
+# Broker URL (in-cluster default)
+broker_url: "http://wyrd-agentd-secrets:8080"
