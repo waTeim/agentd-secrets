@@ -2,7 +2,7 @@
 
 ## Project Overview
 
-agentd-secrets is a secret access broker that mediates access to HashiCorp Vault secrets via OIDC-authenticated requests with human-in-the-loop Duo MFA approval. It uses Playwright to drive headless browser OIDC login flows.
+agentd-secrets is a secret access broker that mediates access to HashiCorp Vault secrets with human-in-the-loop Duo MFA approval. The API requires no caller authentication -- access control is enforced by the human approver accepting or rejecting the Duo push. Internally, it uses Playwright to drive headless browser OIDC login flows against Vault.
 
 ## Architecture
 
@@ -23,7 +23,7 @@ agentd-secrets is a secret access broker that mediates access to HashiCorp Vault
 | `src/vaultClient.ts` | Vault HTTP client (token caching, renewal, wrapped KV reads) |
 | `src/auth/vaultOidcCliFlow.ts` | OIDC CLI-style login flow orchestration with mutex |
 | `src/playwrightDriver.ts` | Headless browser driver with Duo interstitial handling |
-| `src/jwtMiddleware.ts` | JWT validation against OIDC provider JWKS |
+| `src/jwtMiddleware.ts` | JWT validation (currently unused -- API endpoints have no auth) |
 | `src/encryption.ts` | AES-256-GCM encrypt/decrypt for wrap tokens at rest |
 | `bin/agentd-secrets-admin.py` | Admin CLI (init, vault-setup, sync, create-secret, put/get/list-secret) |
 | `tests/test_sync.py` | Python tests for the sync subcommand |

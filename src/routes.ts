@@ -2,7 +2,6 @@ import { Router, Request, Response } from 'express';
 import { Config, validateServiceExists, resolveService, capTTL, ttlToVaultString } from './config';
 import { RequestStore } from './requestStore';
 import { Worker } from './worker';
-import { jwtMiddleware } from './jwtMiddleware';
 import { checkOidcReachable } from './oidcDriver';
 import { VaultClient } from './vaultClient';
 import { VaultOidcManager } from './auth/vaultOidcCliFlow';
@@ -16,7 +15,7 @@ export function createApiRouter(
   const router = Router();
 
   // POST /v1/requests — create a new secret request
-  router.post('/v1/requests', jwtMiddleware, async (req: Request, res: Response) => {
+  router.post('/v1/requests', async (req: Request, res: Response) => {
     try {
       const { service, reason, requester, wrap_ttl } = req.body;
 
@@ -56,7 +55,7 @@ export function createApiRouter(
   });
 
   // GET /v1/requests/:id — check request status
-  router.get('/v1/requests/:id', jwtMiddleware, async (req: Request, res: Response) => {
+  router.get('/v1/requests/:id', async (req: Request, res: Response) => {
     try {
       const request = store.get(req.params.id);
       if (!request) {
@@ -82,12 +81,11 @@ export function createHealthRouter(config: Config, vaultClient: VaultClient): Ro
   router.get('/', (_req: Request, res: Response) => {
     res.json({
       service: 'agentd-secrets',
-      description: 'Secret broker that mediates access to Vault secrets via OIDC-authenticated requests with human-in-the-loop MFA approval.',
+      description: 'Secret broker that mediates access to Vault secrets with human-in-the-loop MFA approval. No authentication required -- access control is enforced via Duo MFA push to the approver.',
       version: '0.1.0',
       endpoints: {
         'POST /v1/requests': {
-          auth: 'Bearer JWT (from OIDC provider)',
-          description: 'Request access to a secret. Returns a request_id to poll.',
+          description: 'Request access to a secret. Returns a request_id to poll. Triggers a Duo MFA push to the human approver.',
           body: {
             service: 'string (required) — secret name, supports prefix/subkey e.g. "logins/google"',
             reason: 'string (required) — justification for access',
@@ -97,17 +95,16 @@ export function createHealthRouter(config: Config, vaultClient: VaultClient): Ro
           response: '202 { request_id, status }',
         },
         'GET /v1/requests/:id': {
-          auth: 'Bearer JWT (from OIDC provider)',
           description: 'Poll request status. When APPROVED, response includes a Vault wrap_token.',
           response: '200 { request_id, service, requester, status, created_at, wrap_token?, wrap_expires_at?, failure_reason? }',
           statuses: ['PENDING_APPROVAL', 'APPROVED', 'DENIED', 'EXPIRED', 'FAILED'],
           usage: 'Use wrap_token with Vault unwrap API: POST <vault_addr>/v1/sys/wrapping/unwrap with X-Vault-Token header. The wrap_token is single-use.',
         },
-        'GET /healthz': { auth: 'none', description: 'Liveness check' },
-        'GET /readyz': { auth: 'none', description: 'Readiness check (OIDC + Vault connectivity)' },
+        'GET /healthz': { description: 'Liveness check' },
+        'GET /readyz': { description: 'Readiness check (OIDC + Vault connectivity)' },
       },
       services: Object.keys(config.serviceRegistry.services),
-      oidc_issuer: config.oidc.issuerURL,
+      vault_addr: config.vault.addr,
     });
   });
 

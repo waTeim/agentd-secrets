@@ -123,7 +123,7 @@ curl -X POST http://localhost:8080/diag/test-read \
       |<-- {secret data} ----|-------------------------|                    |
 ```
 
-1. **Bot requests a secret** -- An automated client sends `POST /v1/requests` with a service name, reason, and identity. The bot authenticates with an OIDC-issued JWT (Bearer token).
+1. **Bot requests a secret** -- An automated client sends `POST /v1/requests` with a service name, reason, and identity. No authentication is required from the caller.
 
 2. **Vault OIDC auth URL** -- The broker requests an OIDC auth URL from Vault's OIDC auth method (`POST /v1/auth/{mount}/oidc/auth_url`), providing a `redirect_uri` of `http://localhost:8250/oidc/callback`.
 
@@ -149,13 +149,11 @@ The broker **never** sees or returns plaintext secrets -- only Vault wrapping to
 
 ### Service Discovery: `GET /`
 
-Returns a self-describing JSON document with all endpoints, schemas, available services, and the OIDC issuer URL. No authentication required.
+Returns a self-describing JSON document with all endpoints, schemas, available services, and the Vault address. No authentication required.
 
 ### `POST /v1/requests`
 
-Create a new secret access request.
-
-**Headers:** `Authorization: Bearer <JWT>`
+Create a new secret access request. No authentication required -- access is controlled by the human approver accepting or rejecting the Duo MFA push.
 
 **Body:**
 ```json
@@ -180,8 +178,6 @@ The `service` field supports sub-key addressing. A service registry entry `login
 ### `GET /v1/requests/{id}`
 
 Check request status. Once approved, includes the wrap token.
-
-**Headers:** `Authorization: Bearer <JWT>`
 
 **Response (200):**
 ```json
@@ -264,9 +260,7 @@ The KV mount is always taken from the `vault.kvMount` config (set via `VAULT_KV_
 | Variable | Required | Default | Description |
 |---|---|---|---|
 | `OIDC_ISSUER_URL` | Yes | -- | OIDC realm issuer URL |
-| `OIDC_REALM` | No | `""` | OIDC realm name |
 | `OIDC_CLIENT_ID` | Yes | -- | Broker's OIDC client ID |
-| `OIDC_AUDIENCE` | No | `""` | Expected JWT audience claim |
 | `VAULT_ADDR` | Yes | -- | Vault server address |
 | `VAULT_OIDC_MOUNT` | No | `oidc` | Vault OIDC auth method mount path |
 | `VAULT_OIDC_ROLE` | No | `agentd-secrets` | Vault OIDC auth role |
@@ -484,7 +478,7 @@ path "<kv_mount>/metadata/<secret_prefix>/*" {
 - **Localhost callback** -- The OIDC callback listener runs inside the pod. No public callback endpoint is exposed.
 - **Token caching with mutex** -- Concurrent requests share a single Vault token. Only one OIDC login happens at a time; subsequent requests reuse the cached token until it expires (at 80% of lease duration).
 - **Wrap tokens encrypted at rest** -- AES-256-GCM with a random 12-byte nonce. Key provided via `WRAPTOKEN_ENC_KEY`.
-- **Bot JWT validation** -- All `/v1/*` requests require a valid JWT signed by the OIDC provider, validated against JWKS with issuer and audience checks.
+- **Network-level access control** -- The broker has no caller authentication. Access is restricted by Kubernetes network policy (ClusterIP service) and authorized by the human approver via Duo MFA push.
 - **Rate limiting** -- `POST /v1/requests` is rate-limited (30 req/min per IP).
 - **Request IDs** -- UUIDv4, cryptographically random and unguessable.
 - **Wrap TTL capping** -- Requested TTLs are capped to the service's `max_ttl`.

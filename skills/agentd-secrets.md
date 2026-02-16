@@ -1,12 +1,6 @@
-# Skill: agentd-secrets — Obtain Secrets from Vault
+# Skill: agentd-secrets -- Obtain Secrets from Vault
 
-Use this skill when you need to retrieve a secret (credentials, API keys, passwords, tokens) from the organization's Vault instance. The agentd-secrets broker handles Vault authentication and MFA approval on your behalf.
-
-## Prerequisites
-
-- You need a valid JWT from the OIDC provider to authenticate API calls.
-- The secret must be registered in the broker's service registry.
-- A human approver must accept the Duo MFA push (this happens automatically but takes a few seconds).
+Use this skill when you need to retrieve a secret (credentials, API keys, passwords, tokens) from the organization's Vault instance. The agentd-secrets broker handles Vault authentication and MFA approval on your behalf. No authentication is required from the caller -- access control is enforced via Duo MFA push to a human approver.
 
 ## Discovery
 
@@ -16,7 +10,7 @@ To discover what the broker offers, fetch its root endpoint:
 curl -s http://agentd-secrets:8080/
 ```
 
-This returns the full API schema, available services, and OIDC issuer URL.
+This returns the full API schema, available services, and the Vault address for unwrapping.
 
 ## Step-by-Step: Obtain a Secret
 
@@ -24,7 +18,6 @@ This returns the full API schema, available services, and OIDC issuer URL.
 
 ```bash
 curl -s -X POST http://agentd-secrets:8080/v1/requests \
-  -H "Authorization: Bearer $JWT_TOKEN" \
   -H "Content-Type: application/json" \
   -d '{
     "service": "logins/google",
@@ -48,8 +41,7 @@ The `service` field supports sub-key addressing: `logins/google`, `logins/github
 The request triggers a Duo MFA push to the human approver. Poll until the status changes from `PENDING_APPROVAL`:
 
 ```bash
-curl -s http://agentd-secrets:8080/v1/requests/$REQUEST_ID \
-  -H "Authorization: Bearer $JWT_TOKEN"
+curl -s http://agentd-secrets:8080/v1/requests/$REQUEST_ID
 ```
 
 Poll every 3-5 seconds. Typical approval takes 5-30 seconds. The request expires after 15 minutes if not approved.
@@ -68,16 +60,16 @@ Response when approved:
 ```
 
 Other terminal statuses:
-- `DENIED` — MFA push was rejected. `failure_reason` field explains why.
-- `FAILED` — Vault error. `failure_reason` field explains why.
-- `EXPIRED` — No approval within 15 minutes.
+- `DENIED` -- MFA push was rejected. `failure_reason` field explains why.
+- `FAILED` -- Vault error. `failure_reason` field explains why.
+- `EXPIRED` -- No approval within 15 minutes.
 
 ### 3. Unwrap the secret from Vault
 
-The `wrap_token` is a single-use Vault response-wrapping token. Unwrap it to get the actual secret:
+The `wrap_token` is a single-use Vault response-wrapping token. Get the Vault address from the discovery endpoint (`GET /`), then unwrap:
 
 ```bash
-curl -s -X POST https://vault.example.com/v1/sys/wrapping/unwrap \
+curl -s -X POST $VAULT_ADDR/v1/sys/wrapping/unwrap \
   -H "X-Vault-Token: $WRAP_TOKEN"
 ```
 
@@ -98,9 +90,10 @@ The actual secret is in `.data.data` (Vault KV v2 nesting). The wrap token can o
 
 ## Important Notes
 
+- **No authentication required**: The broker does not require any tokens or credentials from the caller. Access is controlled by the human approver accepting or rejecting the Duo MFA push.
 - **Single-use tokens**: Each `wrap_token` can only be unwrapped once. If you need the secret again, create a new request.
 - **TTL**: The wrap token has a limited lifetime (default 60s-300s depending on the service). Unwrap it promptly.
-- **Vault address**: Get the Vault address from the broker's root endpoint (`/`) or `/diag/config`.
+- **Vault address**: Get the Vault address from the broker's discovery endpoint (`GET /`).
 - **Available services**: Check `GET /` to see which services are registered. Use sub-key addressing (`service/subkey`) to access individual secrets under a prefix.
 - **Rate limiting**: POST requests are limited to 30/minute per IP.
 - **Request garbage collection**: Completed requests are removed from memory after 1 hour. Poll promptly.
@@ -110,8 +103,8 @@ The actual secret is in `.data.data` (Vault KV v2 nesting). The wrap token can o
 | Action | Method | Path | Auth |
 |--------|--------|------|------|
 | Discover API | GET | `/` | None |
-| Request secret | POST | `/v1/requests` | Bearer JWT |
-| Poll status | GET | `/v1/requests/:id` | Bearer JWT |
+| Request secret | POST | `/v1/requests` | None |
+| Poll status | GET | `/v1/requests/:id` | None |
 | Health check | GET | `/healthz` | None |
 | Readiness | GET | `/readyz` | None |
 | Unwrap secret | POST | `<vault>/v1/sys/wrapping/unwrap` | X-Vault-Token |

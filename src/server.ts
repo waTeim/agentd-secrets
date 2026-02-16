@@ -2,7 +2,6 @@ import express from 'express';
 import rateLimit from 'express-rate-limit';
 import { loadConfig } from './config';
 import { RequestStore } from './requestStore';
-import { initJwtMiddleware } from './jwtMiddleware';
 import { PlaywrightDriver } from './playwrightDriver';
 import { VaultClient } from './vaultClient';
 import { VaultOidcManager } from './auth/vaultOidcCliFlow';
@@ -14,9 +13,6 @@ async function main() {
   logger.info('Starting agentd-secrets broker');
 
   const config = loadConfig();
-
-  // Initialize JWT middleware
-  initJwtMiddleware(config.oidc.issuerURL, config.oidc.audience);
 
   // Initialize stores and clients
   const store = new RequestStore(config.wrapTokenEncKey);
