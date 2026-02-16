@@ -95,27 +95,32 @@ curl -X POST http://localhost:8080/diag/test-read \
 ## How It Works
 
 ```
-Bot / Agent                  agentd-secrets Broker                   Vault                 OIDC Provider + Duo
-    |                             |                            |                         |
-    |-- POST /v1/requests ------->|                            |                         |
-    |<-- 202 {request_id} --------|                            |                         |
-    |                             |-- POST auth/oidc/auth_url ->|                         |
-    |                             |<-- {auth_url} --------------|                         |
-    |                             |-- Start localhost:8250 --->||                         |
-    |                             |-- Playwright opens auth_url ----------------------->  |
-    |                             |                            |   Login + Duo push  ---> |
-    |                             |                            |   <--- Duo approved       |
-    |                             |<-- GET localhost:8250/oidc/callback?code=...&state=... |
-    |                             |-- GET auth/oidc/callback -->|                         |
-    |                             |<-- {client_token} ---------|                         |
-    |                             |-- GET kv/data/... -------->|                         |
-    |                             |   (X-Vault-Wrap-TTL)       |                         |
-    |                             |<-- {wrap_token} -----------|                         |
-    |-- GET /v1/requests/{id} --->|                            |                         |
-    |<-- {status:APPROVED, wrap_token} --|                     |                         |
-    |                                    |                     |                         |
-    |-- POST vault/v1/sys/wrapping/unwrap (X-Vault-Token: wrap_token) -->|               |
-    |<-- {data: {username, password}} ---|                     |                         |
+  Bot / Agent              Broker                    Vault             OIDC + Duo
+      |                      |                         |                    |
+      |-- POST /v1/requests->|                         |                    |
+      |<-- 202 {request_id} -|                         |                    |
+      |                      |                         |                    |
+      |                      |-- auth/oidc/auth_url -->|                    |
+      |                      |<-- {auth_url} ----------|                    |
+      |                      |                         |                    |
+      |                      |-- Playwright login -----|------- login ----->|
+      |                      |                         |                    |
+      |                      |                         |    Duo push ------>|
+      |                      |                         |    <-- approved ---|
+      |                      |                         |                    |
+      |                      |<-- callback?code&state -|-------- redirect --|
+      |                      |-- auth/oidc/callback -->|                    |
+      |                      |<-- {client_token} ------|                    |
+      |                      |                         |                    |
+      |                      |-- GET kv/data/... ----->|                    |
+      |                      |   (X-Vault-Wrap-TTL)    |                    |
+      |                      |<-- {wrap_token} --------|                    |
+      |                      |                         |                    |
+      |-- GET /requests/{id}>|                         |                    |
+      |<- {APPROVED, token} -|                         |                    |
+      |                      |                         |                    |
+      |-- POST unwrap ------>|------------------------>|                    |
+      |<-- {secret data} ----|-------------------------|                    |
 ```
 
 1. **Bot requests a secret** -- An automated client sends `POST /v1/requests` with a service name, reason, and identity. The bot authenticates with an OIDC-issued JWT (Bearer token).
