@@ -2,6 +2,18 @@
 
 A Node.js/TypeScript service that brokers access to HashiCorp Vault secrets with human-in-the-loop approval via OIDC + Duo MFA.
 
+**Keywords:** Vault secrets broker, OIDC login, Duo MFA approval, secret access for bots/agents, Kubernetes deploy.
+
+## Features
+- Human-in-the-loop approval for every secret request (Duo push)
+- Vault KV v2 response wrapping (broker never sees plaintext)
+- Sub-key addressing for flexible secret namespaces
+- Headless OIDC login automation with Playwright
+- Kubernetes‑ready with Helm chart + admin CLI
+
+## Docs
+- Project overview: https://robo-d-wyrd.github.io/agentd-secrets
+
 ## Quickstart
 
 ### 1. Initialize configuration
