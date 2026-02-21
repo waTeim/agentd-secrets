@@ -5,6 +5,8 @@ title: agentd-secrets
 
 # agentd-secrets
 
+![agentd-secrets banner](banner.png)
+
 **Secret access broker for HashiCorp Vault with OIDC + Duo MFA approval.**
 
 Agentd‑secrets is a Node.js/TypeScript service that lets bots and automation request Vault secrets, while a human approves each request via Duo push. The broker never returns plaintext secrets — only short‑lived Vault wrapping tokens.
