@@ -1,0 +1,2 @@
+title: agentd-secrets
+description: "Secret access broker for HashiCorp Vault with OIDC + Duo MFA approval"
